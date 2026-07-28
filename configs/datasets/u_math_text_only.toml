@@ -1,0 +1,4 @@
+name = "u-math-text-only"
+loader = "unified_jsonl"
+path = "data/processed/u_math_text_only_test.jsonl"
+scorer = "judge_backend"

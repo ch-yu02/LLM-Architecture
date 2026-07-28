@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify pinned data and method repositories without installing dependencies."""
+"""Verify the evolving data repository and pinned method repositories."""
 
 from __future__ import annotations
 
@@ -73,12 +73,14 @@ def main() -> None:
 
     data = manifest["data"]
     data_path = resolve(data["path"])
+    data_root = Path(git(data_path, "rev-parse", "--show-toplevel")).resolve()
+    if data_root != data_path:
+        raise AssertionError(
+            f"data: expected an isolated repository at {data_path}, "
+            f"got Git root {data_root}"
+        )
     verify_branch("data", data_path, data["branch"])
     data_revision = git(data_path, "rev-parse", "HEAD")
-    if data_revision != data["revision"]:
-        raise AssertionError(
-            f"data: expected {data['revision']}, got {data_revision}"
-        )
     if git(data_path, "status", "--porcelain"):
         raise AssertionError("data repository worktree is dirty")
     print(f"OK data {data_revision[:12]}")

@@ -1,26 +1,21 @@
-"""Minimal source-level adapter contract.
-
-Runtime integration is intentionally separate from source preparation: each method
-has incompatible model clients and environments.
-"""
+"""Shared source validation for paper method adapters."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+
+from benchmark_core.interfaces import EvaluationMethod, ModelBackend
+from benchmark_core.schema import Generation, Problem
 
 
-class IntegrationPendingError(NotImplementedError):
-    """Raised when source is present but runtime integration is not implemented."""
-
-
-class MethodAdapter(ABC):
+class MethodAdapter(ABC, EvaluationMethod):
     name: str
     required_paths: tuple[str, ...]
 
-    def __init__(self, source_path: Path) -> None:
-        self.source_path = source_path.resolve()
+    def __init__(self, source_path: Path | str) -> None:
+        self.source_path = Path(source_path).resolve()
 
     def validate_source(self) -> None:
         if not self.source_path.is_dir():
@@ -36,10 +31,11 @@ class MethodAdapter(ABC):
             )
 
     @abstractmethod
-    def generate(
+    def run(
         self,
-        problem: Mapping[str, Any],
-        experiment: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        """Run one problem and return a serializable generation record."""
-
+        problem: Problem,
+        backend: ModelBackend,
+        *,
+        config: dict[str, Any],
+    ) -> Generation:
+        """Run one problem through the shared model backend."""

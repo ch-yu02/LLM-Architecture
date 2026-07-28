@@ -3,7 +3,6 @@ schema_version = 1
 [data]
 name = "math-benchmark-data"
 path = "../math-benchmark-data"
-revision = "913455d91ca557c3a9eb48ebb1642fa02b965f4e"
 branch = "main"
 
 [[methods]]
@@ -21,7 +20,7 @@ license = "Apache-2.0"
 paper = "https://arxiv.org/abs/2211.10435"
 python = "unspecified"
 entrypoints = ["scripts/gsm_eval.py", "scripts/gsm_chatgpt.py"]
-integration_status = "source_ready"
+integration_status = "runtime_ready"
 
 [[methods]]
 name = "self_refine"
@@ -36,7 +35,7 @@ paper = "https://arxiv.org/abs/2303.17651"
 python = "unspecified"
 entrypoints = ["src/gsm/run.py", "src/gsm/gsm_selfref_eval.py"]
 external_dependencies = ["https://github.com/reasoning-machines/prompt-lib"]
-integration_status = "source_ready"
+integration_status = "runtime_ready"
 
 [[methods]]
 name = "aflow"
@@ -50,4 +49,4 @@ license = "MIT"
 paper = "https://arxiv.org/abs/2410.10762"
 python = "3.9"
 entrypoints = ["run.py", "run_baseline.py"]
-integration_status = "source_ready"
+integration_status = "runtime_ready"

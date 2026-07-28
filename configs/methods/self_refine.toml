@@ -1,18 +1,25 @@
 name = "self_refine"
-status = "source_ready"
+status = "runtime_ready"
 adapter = "adapters.self_refine.SelfRefineAdapter"
 source_path = "../../../methods/Self-Refine"
 
 [integration]
 task_template = "gsm"
 stages = ["init", "feedback", "iterate"]
-external_dependency = "reasoning-machines/prompt-lib"
+external_dependency = "replaced_by_shared_model_backend"
 
-[pending]
-items = [
-  "pin and isolate prompt-lib",
-  "generalize GSM-specific prompts to the unified math schema",
-  "define iteration count and stopping criteria",
-  "route final answers through dataset-specific answer checkers",
-]
+[method]
+max_refinements = 4
 
+[method.feedback_inference_overrides]
+temperature = 0.7
+
+[fairness]
+min_model_calls_per_problem = 2
+max_model_calls_per_problem = 5
+allowed_inference_overrides = ["temperature"]
+
+[security]
+executor = "executors.RestrictedPythonExecutor"
+allowed_imports = ["decimal", "fractions", "math"]
+network_available = false

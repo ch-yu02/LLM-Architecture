@@ -1,0 +1,29 @@
+name = "math-benchmark-plumbing-matrix"
+samples_per_cell = 1
+methods = ["direct", "zero_shot_cot", "pal", "self_refine", "aflow"]
+
+[[datasets]]
+name = "gsm1k"
+sample_id = "gsm1k-0000"
+
+[[datasets]]
+name = "math-perturb"
+sample_id = "math-perturb-simple-001"
+
+[[datasets]]
+name = "harp"
+sample_id = "harp-1950-ahsme-1"
+
+[[datasets]]
+name = "u-math-text-only"
+sample_id = "00143e2e-2d9f-4fc3-a9c5-9d2e6aba5cba"
+
+[[datasets]]
+name = "mathconstruct"
+sample_id = "mathconstruct-test-bulgarian-mo-r2-2021-8-4-original"
+
+[inference]
+temperature = 0.0
+top_p = 1.0
+max_output_tokens = 8192
+seed = 0

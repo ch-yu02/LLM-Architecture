@@ -1,0 +1,10 @@
+status = "pending"
+selection_benchmark = "mu-math"
+protocol = "u-math-manual-cot-self-verdict"
+protocol_version = 1
+verdict_extractor = "none"
+inconclusive_treatment = "incorrect"
+
+# After comparing candidate judges on µ-MATH, change status to "locked" and
+# record exactly one repository-relative candidate profile, for example:
+# profile = "candidates/qwen35_flash.toml"

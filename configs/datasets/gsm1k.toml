@@ -1,0 +1,4 @@
+name = "gsm1k"
+loader = "unified_jsonl"
+path = "data/processed/gsm1k.jsonl"
+scorer = "numeric_answer"

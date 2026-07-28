@@ -1,0 +1,5 @@
+name = "harp"
+loader = "unified_jsonl"
+path = "data/processed/harp_test.jsonl"
+scorer = "official_bridge"
+checker = "data/harp/eval/latex_answer_check.py"

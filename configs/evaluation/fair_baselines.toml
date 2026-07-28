@@ -1,0 +1,15 @@
+name = "fair_single_call_baselines"
+methods = ["direct", "zero_shot_cot"]
+
+[fairness]
+same_model = true
+same_dataset_order = true
+same_dataset_scope = true
+min_model_calls_per_problem = 1
+max_model_calls_per_problem = 1
+allowed_inference_overrides = []
+
+[inference]
+temperature = 0.0
+top_p = 1.0
+max_output_tokens = 8192

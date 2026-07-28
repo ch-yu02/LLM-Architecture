@@ -1,18 +1,37 @@
 name = "aflow"
-status = "source_ready"
+status = "runtime_ready"
 adapter = "adapters.aflow.AFlowAdapter"
 source_path = "../../../methods/AFlow"
 
 [integration]
-python = "3.9"
+upstream_python = "3.9"
 config_template = "../../../methods/AFlow/config/config2.example.yaml"
 native_datasets = ["GSM8K", "MATH"]
+execution_mode = "frozen_declarative_workflow"
+default_workflow = "official round_1 Custom node"
 
-[pending]
-items = [
-  "create a secret-free local model configuration",
-  "implement benchmark classes for the unified datasets",
-  "separate workflow optimization and held-out evaluation splits",
-  "record generated workflows and optimization cost",
-]
+[workflow]
+id = "official-round-1-custom"
+output = "answer"
 
+[[workflow.nodes]]
+id = "answer"
+operator = "custom"
+instruction = ""
+inputs = []
+
+[workflow_artifact]
+source = "AFlow workspace/MATH and workspace/GSM8K round_1"
+optimization_split = "none"
+optimization_cost = 0
+evaluation_data_used = false
+frozen = true
+
+[fairness]
+min_model_calls_per_problem = 1
+max_model_calls_per_problem = 1
+allowed_inference_overrides = []
+
+[constraints]
+online_optimization_on_evaluation_data = false
+custom_workflow_requires_frozen_artifact = true

@@ -1,0 +1,10 @@
+name = "direct"
+status = "ready"
+implementation = "benchmark_methods.baselines.DirectAnswerMethod"
+model_calls_per_problem = 1
+uses_examples = false
+uses_tools = false
+
+[prompt]
+strategy = "zero_shot_direct"
+final_answer_instruction = "state clearly; use boxed form when appropriate"

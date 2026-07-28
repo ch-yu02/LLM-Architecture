@@ -1,5 +1,5 @@
 name = "pal"
-status = "source_ready"
+status = "runtime_ready"
 adapter = "adapters.pal.PALAdapter"
 source_path = "../../../methods/PAL"
 
@@ -7,12 +7,15 @@ source_path = "../../../methods/PAL"
 prompt_family = "math"
 execution_backend = "sandbox_required"
 supported_output = "python_program"
+model_calls_per_problem = 1
+prompt_source = "pal/prompt/math_prompts.py:MATH_CHAT_BETA_PROMPT"
 
-[pending]
-items = [
-  "replace the legacy OpenAI client with the selected shared model backend",
-  "map unified JSONL problem fields into the PAL math prompt",
-  "run generated programs in an isolated sandbox",
-  "route final values through dataset-specific answer checkers",
-]
+[fairness]
+min_model_calls_per_problem = 1
+max_model_calls_per_problem = 1
+allowed_inference_overrides = []
 
+[security]
+executor = "executors.RestrictedPythonExecutor"
+allowed_imports = ["decimal", "fractions", "math"]
+network_available = false

@@ -1,0 +1,5 @@
+name = "math-perturb"
+loader = "unified_jsonl"
+path = "data/processed/math_perturb_test.jsonl"
+scorer = "official_bridge"
+checker = "data/math_perturb/source/evaluate.py"

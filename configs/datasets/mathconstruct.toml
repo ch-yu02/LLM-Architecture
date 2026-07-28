@@ -1,0 +1,5 @@
+name = "mathconstruct"
+loader = "unified_jsonl"
+path = "data/processed/mathconstruct_test.jsonl"
+scorer = "official_bridge"
+checker = "data/mathconstruct/source/src/math_construct/problems/problem.py"

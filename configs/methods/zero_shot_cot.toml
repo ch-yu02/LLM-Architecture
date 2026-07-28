@@ -1,0 +1,10 @@
+name = "zero_shot_cot"
+status = "ready"
+implementation = "benchmark_methods.baselines.ZeroShotChainOfThoughtMethod"
+model_calls_per_problem = 1
+uses_examples = false
+uses_tools = false
+
+[prompt]
+strategy = "zero_shot_chain_of_thought"
+final_answer_instruction = "state clearly; use boxed form when appropriate"
