@@ -1,0 +1,53 @@
+schema_version = 1
+
+[data]
+name = "math-benchmark-data"
+path = "../math-benchmark-data"
+revision = "913455d91ca557c3a9eb48ebb1642fa02b965f4e"
+branch = "main"
+
+[[methods]]
+name = "pal"
+display_name = "PAL"
+path = "../methods/PAL"
+repository = "https://github.com/reasoning-machines/pal.git"
+revision = "f81ca2a9777f002f98a6b4d0f10b61bd5c8feb02"
+tree = "6f0101b172bb6341d1315f6f441d4defa6c7d20c"
+acquisition = "verified_archive"
+archive_sha256 = "4d3cf284c0b99de7031b9a43ade4e0ef281c4071095eefb874d3e9bf5c0fa0bc"
+local_revision = "98347a1d6ae79880f7315fc758e06faeab1f2afd"
+branch = "main"
+license = "Apache-2.0"
+paper = "https://arxiv.org/abs/2211.10435"
+python = "unspecified"
+entrypoints = ["scripts/gsm_eval.py", "scripts/gsm_chatgpt.py"]
+integration_status = "source_ready"
+
+[[methods]]
+name = "self_refine"
+display_name = "Self-Refine"
+path = "../methods/Self-Refine"
+repository = "https://github.com/madaan/self-refine.git"
+revision = "9a206d41e5d2d0c241bb441f41eeadb945afaa55"
+acquisition = "git_clone"
+branch = "benchmark-integration"
+license = "Apache-2.0"
+paper = "https://arxiv.org/abs/2303.17651"
+python = "unspecified"
+entrypoints = ["src/gsm/run.py", "src/gsm/gsm_selfref_eval.py"]
+external_dependencies = ["https://github.com/reasoning-machines/prompt-lib"]
+integration_status = "source_ready"
+
+[[methods]]
+name = "aflow"
+display_name = "AFlow"
+path = "../methods/AFlow"
+repository = "https://github.com/FoundationAgents/AFlow.git"
+revision = "3f457218fc716093fe53f6df8a5d5e6379d66346"
+acquisition = "git_clone"
+branch = "benchmark-integration"
+license = "MIT"
+paper = "https://arxiv.org/abs/2410.10762"
+python = "3.9"
+entrypoints = ["run.py", "run_baseline.py"]
+integration_status = "source_ready"

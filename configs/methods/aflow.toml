@@ -1,0 +1,18 @@
+name = "aflow"
+status = "source_ready"
+adapter = "adapters.aflow.AFlowAdapter"
+source_path = "../../../methods/AFlow"
+
+[integration]
+python = "3.9"
+config_template = "../../../methods/AFlow/config/config2.example.yaml"
+native_datasets = ["GSM8K", "MATH"]
+
+[pending]
+items = [
+  "create a secret-free local model configuration",
+  "implement benchmark classes for the unified datasets",
+  "separate workflow optimization and held-out evaluation splits",
+  "record generated workflows and optimization cost",
+]
+

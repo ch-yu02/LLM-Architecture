@@ -1,0 +1,18 @@
+name = "self_refine"
+status = "source_ready"
+adapter = "adapters.self_refine.SelfRefineAdapter"
+source_path = "../../../methods/Self-Refine"
+
+[integration]
+task_template = "gsm"
+stages = ["init", "feedback", "iterate"]
+external_dependency = "reasoning-machines/prompt-lib"
+
+[pending]
+items = [
+  "pin and isolate prompt-lib",
+  "generalize GSM-specific prompts to the unified math schema",
+  "define iteration count and stopping criteria",
+  "route final answers through dataset-specific answer checkers",
+]
+

@@ -1,0 +1,18 @@
+name = "pal"
+status = "source_ready"
+adapter = "adapters.pal.PALAdapter"
+source_path = "../../../methods/PAL"
+
+[integration]
+prompt_family = "math"
+execution_backend = "sandbox_required"
+supported_output = "python_program"
+
+[pending]
+items = [
+  "replace the legacy OpenAI client with the selected shared model backend",
+  "map unified JSONL problem fields into the PAL math prompt",
+  "run generated programs in an isolated sandbox",
+  "route final values through dataset-specific answer checkers",
+]
+
