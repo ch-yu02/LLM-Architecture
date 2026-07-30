@@ -5,6 +5,7 @@ from .artifacts import (
     experiment_directory,
     summarize_api_calls,
     summarize_records,
+    timestamped_experiment_directory,
     tree_fingerprint,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "experiment_directory",
     "summarize_api_calls",
     "summarize_records",
+    "timestamped_experiment_directory",
     "tree_fingerprint",
 ]

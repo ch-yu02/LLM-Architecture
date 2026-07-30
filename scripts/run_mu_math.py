@@ -27,8 +27,8 @@ from benchmark_experiments.artifacts import (  # noqa: E402
     ensure_experiment_manifest,
     git_revision,
     python_environment_state,
-    safe_slug,
     summarize_api_calls,
+    timestamped_experiment_directory,
     tree_fingerprint,
 )
 from model_backends import (  # noqa: E402
@@ -128,17 +128,6 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
     if not rows:
         raise ValueError(f"µ-MATH data is empty: {path}")
     return rows
-
-
-def _experiment_directory(
-    output_root: Path,
-    *,
-    profile: str,
-    fingerprint: str,
-) -> Path:
-    return output_root / (
-        f"{safe_slug(profile)}__mu-math__{fingerprint[:16]}"
-    )
 
 
 def _read_records(
@@ -536,10 +525,12 @@ def main() -> int:
     }
     fingerprint = configuration_fingerprint(configuration)
     output_root = args.output_root.resolve()
-    directory = _experiment_directory(
+    started_at = datetime.now(timezone.utc).isoformat()
+    directory = timestamped_experiment_directory(
         output_root,
-        profile=profile.profile,
+        components=(profile.profile, "mu-math"),
         fingerprint=fingerprint,
+        created_at=started_at,
     )
     records_path = directory / "records.jsonl"
     api_path = directory / "api_calls.jsonl"
@@ -625,7 +616,16 @@ def main() -> int:
         _report_error(console, "API preflight failed", exc, debug=args.debug)
         return 2
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    directory = timestamped_experiment_directory(
+        output_root,
+        components=(profile.profile, "mu-math"),
+        fingerprint=fingerprint,
+        created_at=started_at,
+        claim=True,
+    )
+    records_path = directory / "records.jsonl"
+    api_path = directory / "api_calls.jsonl"
+    errors_path = directory / "errors.jsonl"
     try:
         ensure_experiment_manifest(
             directory / "experiment.json",

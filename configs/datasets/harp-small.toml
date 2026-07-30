@@ -1,0 +1,7 @@
+name = "harp-small"
+loader = "unified_jsonl"
+path = "data/processed/harp_small_test.jsonl"
+scope = "small-test:harp_small_test_v1"
+parent = "harp"
+scorer = "official_bridge"
+checker = "data/harp/eval/latex_answer_check.py"

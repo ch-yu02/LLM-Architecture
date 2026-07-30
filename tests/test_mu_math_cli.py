@@ -187,6 +187,10 @@ class OpenAI:
             ]
             self.assertEqual(len(experiment_dirs), 1)
             experiment_dir = experiment_dirs[0]
+            self.assertRegex(
+                experiment_dir.name,
+                r"__\d{8}T\d{6}Z__[0-9a-f]{16}$",
+            )
 
             continued = subprocess.run(
                 [

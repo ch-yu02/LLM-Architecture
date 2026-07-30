@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.run_experiments import _dataset_selection
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = Path(
@@ -19,6 +21,19 @@ PYTHON = ROOT / ".venv-checkers" / "bin" / "python"
 
 
 class ExperimentCliTests(unittest.TestCase):
+    def test_dataset_selection_keeps_harp_small_explicit(self):
+        self.assertEqual(
+            _dataset_selection("all"),
+            [
+                "gsm1k",
+                "math-perturb",
+                "harp",
+                "u-math-text-only",
+                "mathconstruct",
+            ],
+        )
+        self.assertEqual(_dataset_selection("harp-small"), ["harp-small"])
+
     def test_local_api_run_resumes_and_separates_changed_config(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -150,6 +165,10 @@ class OpenAI:
             self.assertEqual(call_log.read_text().splitlines()[0], "1234")
             directories = [path for path in output_root.iterdir() if path.is_dir()]
             self.assertEqual(len(directories), 1)
+            self.assertRegex(
+                directories[0].name,
+                r"__\d{8}T\d{6}Z__[0-9a-f]{16}$",
+            )
             records_path = directories[0] / "records.jsonl"
             record_lines = [
                 json.loads(line) for line in records_path.read_text().splitlines()
@@ -393,6 +412,59 @@ class OpenAI:
             ]
             self.assertTrue(
                 all(summary["aggregate"]["errors"] == 0 for summary in summaries)
+            )
+
+            harp_small_output = temporary / "harp-small-results"
+            harp_small = subprocess.run(
+                [
+                    *command,
+                    "--datasets",
+                    "harp-small",
+                    "--output-root",
+                    str(harp_small_output),
+                ],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                harp_small.returncode,
+                0,
+                harp_small.stderr or harp_small.stdout,
+            )
+            harp_small_directory = next(harp_small_output.iterdir())
+            harp_small_manifest = json.loads(
+                (harp_small_directory / "experiment.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                harp_small_manifest["configuration"]["dataset"],
+                "harp-small",
+            )
+            self.assertEqual(
+                harp_small_manifest["configuration"]["dataset_scope"],
+                "small-test:harp_small_test_v1",
+            )
+            harp_small_records = [
+                json.loads(line)
+                for line in (harp_small_directory / "records.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(
+                harp_small_records[1]["problem"]["metadata"]["split"],
+                "small_test",
+            )
+            self.assertEqual(
+                harp_small_records[1]["problem"]["metadata"]["source_split"],
+                "test",
+            )
+            self.assertEqual(
+                harp_small_records[1]["problem"]["metadata"]["subset_id"],
+                "harp_small_test_v1",
             )
 
             pending_u_math_output = temporary / "pending-u-math"

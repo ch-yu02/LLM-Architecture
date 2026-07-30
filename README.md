@@ -26,13 +26,14 @@ LLM_architecture/
 预算和安全边界见
 [`docs/method_adapters.md`](docs/method_adapters.md)。
 
-统一评测核心和五个数据集插件已经建立：
+统一评测核心已接入五个完整数据集及 HARP 小集：
 
 | 数据集 | loader | scorer |
 | --- | --- | --- |
 | GSM1K | unified JSONL | 数值答案 |
 | MATH-Perturb | 固化 test JSONL（230 题） | 官方 `answer_check` |
 | HARP | 固化 test JSONL（4,302 题） | 官方 `latex_answer_check` |
+| HARP small | HARP test 的固化分层 1/3 子集（1,434 题） | 官方 `latex_answer_check` |
 | U-MATH text-only | 固化 test JSONL（720 题） | 显式注入的 LLM judge |
 | MathConstruct | 固化 JSONL（97 families / 439 题） | 官方 `parse_and_check` |
 
@@ -94,13 +95,15 @@ latency/token/进度显示。`--seed` 会传给所有模型调用并纳入实验
 
 ```text
 results/experiments/
-└── qwen35-flash-bj__direct__gsm1k__r001__<fingerprint>/
+└── qwen35-flash-bj__direct__gsm1k__r001__<UTC-time>__<fingerprint>/
     ├── experiment.json
     ├── records.jsonl
     ├── api_calls.jsonl
     ├── errors.jsonl        # 仅发生样本错误时生成
     └── summary.json
 ```
+
+`UTC-time` 是该指纹首次创建实验时的 UTC 时间；同一指纹续跑会复用该目录。
 
 `records.jsonl` 使用紧凑格式：首行只记录一次 experiment identity；样本行保留
 题目正文、参考答案、dataset metadata、模型输出、评分、token、耗时、模型调用数
@@ -109,6 +112,8 @@ results/experiments/
 
 完整命令与记录协议见
 [`docs/running_experiments.md`](docs/running_experiments.md)。
+小批量 HARP 使用 `--datasets harp-small`；`--datasets all` 仍只展开为五个完整
+基准，不包含该子集。
 
 U-MATH 的正式 judge 将由 `configs/judges/u_math.lock.toml` 唯一锁定，
 不提供命令行覆盖能力。当前 lock 状态为 `pending`：在 µ-MATH 候选测试完成并

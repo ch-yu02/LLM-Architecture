@@ -26,6 +26,7 @@ class OfficialCheckerTests(unittest.TestCase):
             bridge_python={
                 "math-perturb": CHECKER_PYTHON,
                 "harp": CHECKER_PYTHON,
+                "harp-small": CHECKER_PYTHON,
                 "mathconstruct": CHECKER_PYTHON,
             },
         )
@@ -45,6 +46,17 @@ class OfficialCheckerTests(unittest.TestCase):
             scorer.score(problem, Generation(r"\boxed{10\frac{2}{3}}")).correct
         )
         self.assertFalse(scorer.score(problem, Generation(r"\boxed{11}")).correct)
+
+    def test_harp_small_uses_official_checker(self):
+        plugin = get_dataset("harp-small")
+        problem = next(iter(plugin.iter_problems(self.context())))
+        scorer = plugin.create_scorer(self.context())
+        self.assertTrue(
+            scorer.score(
+                problem,
+                Generation(rf"\boxed{{{problem.reference_answer}}}"),
+            ).correct
+        )
 
     def test_mathconstruct_frozen_test_split_and_scoring(self):
         plugin = get_dataset("mathconstruct")

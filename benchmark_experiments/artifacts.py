@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -41,7 +43,9 @@ def experiment_directory(
     dataset: str,
     repeat: int,
     fingerprint: str,
+    created_at: str,
     run_tag: str = "",
+    claim: bool = False,
 ) -> Path:
     components = [
         safe_slug(model),
@@ -51,9 +55,77 @@ def experiment_directory(
     ]
     if run_tag.strip():
         components.append(safe_slug(run_tag))
-    components.append(fingerprint[:16])
-    directory_name = "__".join(components)
-    return output_root / directory_name
+    return timestamped_experiment_directory(
+        output_root,
+        components=components,
+        fingerprint=fingerprint,
+        created_at=created_at,
+        claim=claim,
+    )
+
+
+def timestamped_experiment_directory(
+    output_root: Path,
+    *,
+    components: Iterable[str],
+    fingerprint: str,
+    created_at: str,
+    claim: bool = False,
+) -> Path:
+    prefix = "__".join(safe_slug(component) for component in components)
+    fingerprint_component = fingerprint[:16]
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}__(\d{{8}}T\d{{6}}Z)__"
+        rf"{re.escape(fingerprint_component)}$"
+    )
+    try:
+        timestamp = datetime.fromisoformat(
+            created_at.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ExperimentArtifactError(
+            f"Invalid experiment creation time: {created_at!r}"
+        ) from exc
+    if timestamp.tzinfo is None:
+        raise ExperimentArtifactError(
+            f"Experiment creation time must include a timezone: {created_at!r}"
+        )
+    timestamp = timestamp.astimezone(timezone.utc)
+    timestamp_component = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    proposed = output_root / (
+        f"{prefix}__{timestamp_component}__{fingerprint_component}"
+    )
+
+    def find_existing() -> Path | None:
+        matches = (
+            sorted(
+                path
+                for path in output_root.iterdir()
+                if path.is_dir() and pattern.fullmatch(path.name)
+            )
+            if output_root.is_dir()
+            else []
+        )
+        if len(matches) > 1:
+            raise ExperimentArtifactError(
+                "Multiple experiment directories have the same configuration "
+                f"fingerprint: {', '.join(str(path) for path in matches)}"
+            )
+        return matches[0] if matches else None
+
+    existing = find_existing()
+    if existing is not None or not claim:
+        return existing or proposed
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    lock_path = output_root / ".experiment-directory.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        existing = find_existing()
+        if existing is not None:
+            return existing
+        proposed.mkdir()
+        return proposed
 
 
 def atomic_write_json(path: Path, value: dict[str, Any]) -> None:

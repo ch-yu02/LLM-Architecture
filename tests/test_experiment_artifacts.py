@@ -100,13 +100,40 @@ class ExperimentArtifactTests(unittest.TestCase):
             repeat=2,
             run_tag="paper baseline",
             fingerprint="0123456789abcdef" * 4,
+            created_at="2026-07-30T08:09:10+00:00",
         )
         self.assertEqual(path.parent, root)
         self.assertEqual(
             path.name,
             "qwen-3.5-flash__self_refine__u-math-text-only__r002"
-            "__paper-baseline__0123456789abcdef",
+            "__paper-baseline__20260730T080910Z__0123456789abcdef",
         )
+
+    def test_experiment_directory_reuses_timestamped_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = experiment_directory(
+                root,
+                model="qwen",
+                method="direct",
+                dataset="gsm1k",
+                repeat=1,
+                fingerprint="a" * 64,
+                created_at="2026-07-30T08:00:00+00:00",
+                claim=True,
+            )
+            self.assertTrue(first.is_dir())
+            resumed = experiment_directory(
+                root,
+                model="qwen",
+                method="direct",
+                dataset="gsm1k",
+                repeat=1,
+                fingerprint="a" * 64,
+                created_at="2026-07-31T09:00:00+00:00",
+                claim=True,
+            )
+            self.assertEqual(resumed, first)
 
     def test_manifest_rejects_another_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

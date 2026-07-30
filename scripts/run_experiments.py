@@ -62,13 +62,14 @@ from scorers.model_judge import (  # noqa: E402
 
 PAPER_METHODS = ("pal", "self_refine", "aflow")
 ALL_METHODS = ("direct", "zero_shot_cot", *PAPER_METHODS)
-ALL_DATASETS = (
+PRIMARY_DATASETS = (
     "gsm1k",
     "math-perturb",
     "harp",
     "u-math-text-only",
     "mathconstruct",
 )
+SELECTABLE_DATASETS = (*PRIMARY_DATASETS, "harp-small")
 U_MATH_JUDGE_LOCK = ROOT / "configs" / "judges" / "u_math.lock.toml"
 
 
@@ -82,6 +83,12 @@ def _csv_selection(value: str, available: tuple[str, ...], label: str) -> list[s
     if not selected:
         raise ValueError(f"No {label} selected")
     return selected
+
+
+def _dataset_selection(value: str) -> list[str]:
+    if value.strip().lower() == "all":
+        return list(PRIMARY_DATASETS)
+    return _csv_selection(value, SELECTABLE_DATASETS, "datasets")
 
 
 def _parse_value(value: str) -> Any:
@@ -462,7 +469,7 @@ def main() -> int:
 
     try:
         methods = _csv_selection(args.methods, ALL_METHODS, "methods")
-        datasets = _csv_selection(args.datasets, ALL_DATASETS, "datasets")
+        datasets = _dataset_selection(args.datasets)
         overrides = _method_overrides(args)
         model_path = _resolve_model_path(args.model)
         profile = load_model_profile(model_path)
@@ -559,6 +566,7 @@ def main() -> int:
         bridge_python={
             "math-perturb": str(checker_python),
             "harp": str(checker_python),
+            "harp-small": str(checker_python),
             "mathconstruct": str(checker_python),
         },
     )
@@ -774,7 +782,9 @@ def main() -> int:
                             "method_config": method_config,
                             "fairness_policy": policy.to_dict(),
                             "dataset": dataset_name,
-                            "dataset_scope": "test",
+                            "dataset_scope": getattr(
+                                plugin, "evaluation_scope", "test"
+                            ),
                             "repeat": repeat_index,
                             "run_tag": args.run_tag,
                             "judge": public_judge,
@@ -787,6 +797,7 @@ def main() -> int:
                             },
                         }
                         fingerprint = configuration_fingerprint(configuration)
+                        started_at = datetime.now(timezone.utc).isoformat()
                         directory = experiment_directory(
                             output_root,
                             model=profile.profile,
@@ -794,9 +805,10 @@ def main() -> int:
                             dataset=dataset_name,
                             repeat=repeat_index,
                             fingerprint=fingerprint,
+                            created_at=started_at,
                             run_tag=args.run_tag,
+                            claim=True,
                         )
-                        started_at = datetime.now(timezone.utc).isoformat()
                         ensure_experiment_manifest(
                             directory / "experiment.json",
                             configuration=configuration,

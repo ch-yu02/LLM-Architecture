@@ -19,6 +19,7 @@ _BRIDGES = Path(__file__).resolve().parents[1] / "bridges"
 
 class JsonlPlugin:
     aliases: tuple[str, ...] = ()
+    evaluation_scope = "test"
     filename: str
 
     def iter_problems(self, context: DatasetContext) -> Iterable[Problem]:
@@ -71,6 +72,13 @@ class HARPPlugin(JsonlPlugin):
         return OfficialBridgeScorer(bridge)
 
 
+class HARPSmallPlugin(HARPPlugin):
+    name = "harp-small"
+    aliases = ("harp_small", "HARP-small")
+    evaluation_scope = "small-test:harp_small_test_v1"
+    filename = "harp_small_test.jsonl"
+
+
 class UMathPlugin(JsonlPlugin):
     name = "u-math-text-only"
     aliases = ("u_math_text_only", "U-MATH text-only")
@@ -101,6 +109,7 @@ for _plugin in (
     GSM1KPlugin(),
     MathPerturbPlugin(),
     HARPPlugin(),
+    HARPSmallPlugin(),
     UMathPlugin(),
     MathConstructPlugin(),
 ):

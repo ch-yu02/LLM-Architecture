@@ -131,11 +131,15 @@ direct, zero_shot_cot, pal, self_refine, aflow, all
 | `gsm1k` | 1,205 | 数值答案 |
 | `math-perturb` | 230 | 官方 `answer_check` |
 | `harp` | 4,302 | 官方 `latex_answer_check` |
+| `harp-small` | 1,434 | HARP test 的固定分层 1/3 子集；官方 `latex_answer_check` |
 | `u-math-text-only` | 720 | 锁定的 LLM judge |
 | `mathconstruct` | 439 | 官方 `parse_and_check` |
 
 当前 U-MATH judge lock 为 `pending`，所以选择 `u-math-text-only` 或
 `--datasets all` 会在创建产物和调用 API 前退出。
+`--datasets all` 只包含五个完整基准，不包含 `harp-small`，避免重复评测 HARP
+子集。需要小集时显式传入 `--datasets harp-small`；HARP validation 仅供优化与
+选型，不是正式评测 dataset，不能通过该参数选择。
 
 ### 参数
 
@@ -203,13 +207,15 @@ repeat 可能完全一致。
 
 ```text
 results/experiments/
-└── <model>__<method>__<dataset>__r001__<tag>__<fingerprint>/
+└── <model>__<method>__<dataset>__r001__<tag>__<UTC-time>__<fingerprint>/
     ├── experiment.json
     ├── records.jsonl
     ├── api_calls.jsonl
     ├── errors.jsonl
     └── summary.json
 ```
+
+`UTC-time` 格式为 `YYYYMMDDTHHMMSSZ`，记录该指纹首次创建时间；续跑复用原目录。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -320,7 +326,7 @@ judge 输出 `Yes`、`No` 或 `Inconclusive`。格式不合规时按 `Inconclusi
 
 ```text
 results/mu_math/
-└── <judge-profile>__mu-math__<fingerprint>/
+└── <judge-profile>__mu-math__<UTC-time>__<fingerprint>/
     ├── experiment.json
     ├── records.jsonl
     ├── api_calls.jsonl

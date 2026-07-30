@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -44,9 +45,17 @@ class DatasetTests(unittest.TestCase):
     def test_builtin_registry_and_aliases(self):
         self.assertEqual(
             list_datasets(),
-            ["gsm1k", "harp", "math-perturb", "mathconstruct", "u-math-text-only"],
+            [
+                "gsm1k",
+                "harp",
+                "harp-small",
+                "math-perturb",
+                "mathconstruct",
+                "u-math-text-only",
+            ],
         )
         self.assertIs(get_dataset("MATH-Perturb"), get_dataset("math_perturb"))
+        self.assertIs(get_dataset("harp-small"), get_dataset("harp_small"))
 
     def test_external_plugin_needs_no_runner_change(self):
         plugin = DummyPlugin()
@@ -59,6 +68,7 @@ class DatasetTests(unittest.TestCase):
             "gsm1k": 1205,
             "math-perturb": 230,
             "harp": 4302,
+            "harp-small": 1434,
             "mathconstruct": 439,
             "u-math-text-only": 720,
         }
@@ -67,6 +77,34 @@ class DatasetTests(unittest.TestCase):
                 problems = list(get_dataset(name).iter_problems(context))
                 self.assertEqual(len(problems), count)
                 self.assertEqual(problems[0].dataset, name)
+
+    def test_harp_splits_are_unambiguous(self):
+        context = DatasetContext(DATA_ROOT)
+        test = list(get_dataset("harp").iter_problems(context))
+        small = list(get_dataset("harp-small").iter_problems(context))
+        validation_ids = {
+            json.loads(line)["id"]
+            for line in (
+                DATA_ROOT / "data" / "processed" / "harp_validation.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
+        }
+        test_ids = {problem.id for problem in test}
+        small_ids = {problem.id for problem in small}
+        self.assertEqual(len(small_ids), 1434)
+        self.assertLess(small_ids, test_ids)
+        self.assertFalse(small_ids & validation_ids)
+        self.assertEqual(
+            {problem.metadata["split"] for problem in small},
+            {"small_test"},
+        )
+        self.assertEqual(
+            {problem.metadata["source_split"] for problem in small},
+            {"test"},
+        )
+        self.assertEqual(
+            {problem.metadata["subset_id"] for problem in small},
+            {"harp_small_test_v1"},
+        )
 
     def test_gsm1k_numeric_scorer(self):
         problem = Problem("gsm1k", "x", "question", "1,024")
