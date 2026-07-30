@@ -12,10 +12,6 @@ _SYSTEM_PROMPT = (
     "You are a mathematical problem solver. Follow the output format requested "
     "by the problem exactly. Do not use external tools."
 )
-_FINAL_ANSWER_INSTRUCTION = (
-    "State the final answer clearly. Use \\boxed{...} when the problem does not "
-    "specify another output format."
-)
 
 
 class PromptBaseline:
@@ -34,14 +30,17 @@ class PromptBaseline:
     ) -> Generation:
         if config:
             raise ValueError(f"{self.name} has no method-specific parameters")
+        answer_instruction = (
+            f" {problem.answer_instruction}" if problem.answer_instruction else ""
+        )
         return backend.generate(
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
-                        f"{problem.prompt}\n\n{self.instruction} "
-                        f"{_FINAL_ANSWER_INSTRUCTION}"
+                        f"{problem.prompt}\n\n{self.instruction}"
+                        f"{answer_instruction}"
                     ),
                 },
             ],

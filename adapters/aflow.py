@@ -10,7 +10,7 @@ from benchmark_core.schema import Generation, Problem
 from executors import ProgramExecutionError, RestrictedPythonExecutor
 
 from .base import MethodAdapter
-from .pal import extract_python_code
+from .pal import extract_python_code, format_final_answer
 
 
 _ANSWER_PROMPT = """Think step by step and solve the problem.
@@ -194,32 +194,50 @@ class AFlowAdapter(MethodAdapter):
         self._validate_workflow(workflow)
 
         values: dict[str, str] = {}
+        complete_outputs: dict[str, bool] = {}
         trace: list[dict[str, Any]] = []
         last_generation: Generation | None = None
+        answer_instruction = (
+            f"\n\n{problem.answer_instruction}"
+            if problem.answer_instruction
+            else ""
+        )
         for node in workflow["nodes"]:
             node_id = node["id"]
             operator = node["operator"]
             inputs = [values[item] for item in node.get("inputs", [])]
             if operator == "custom":
-                prompt = f"{node.get('instruction', '')}{problem.prompt}"
+                prompt = (
+                    f"{node.get('instruction', '')}{problem.prompt}"
+                    f"{answer_instruction}"
+                )
                 last_generation = backend.generate(
                     [{"role": "user", "content": prompt}], config={}
                 )
                 value = last_generation.text
+                output_complete = last_generation.finish_reason == "stop"
             elif operator == "answer_generate":
                 last_generation = backend.generate(
                     [
                         {
                             "role": "user",
-                            "content": _ANSWER_PROMPT.format(problem=problem.prompt),
+                            "content": _ANSWER_PROMPT.format(
+                                problem=(
+                                    problem.prompt
+                                    + answer_instruction
+                                )
+                            ),
                         }
                     ],
                     config={},
                 )
-                value = (
-                    _xml_field(last_generation.text, "answer")
-                    or last_generation.text
-                )
+                answer_field = _xml_field(last_generation.text, "answer")
+                if answer_field is not None:
+                    value = format_final_answer(answer_field)
+                    output_complete = True
+                else:
+                    value = last_generation.text
+                    output_complete = last_generation.finish_reason == "stop"
             elif operator == "ensemble":
                 choices = "\n\n".join(
                     f"{chr(65 + index)}:\n{solution}"
@@ -237,7 +255,11 @@ class AFlowAdapter(MethodAdapter):
                     config={},
                 )
                 letter = _solution_letter(last_generation.text, len(inputs))
-                value = inputs[ord(letter) - ord("A")]
+                selected_index = ord(letter) - ord("A")
+                value = inputs[selected_index]
+                output_complete = complete_outputs[
+                    node.get("inputs", [])[selected_index]
+                ]
             else:
                 analysis = inputs[0] if inputs else "None"
                 max_attempts = node.get("max_attempts", 3)
@@ -285,8 +307,10 @@ class AFlowAdapter(MethodAdapter):
                     raise ProgramExecutionError(
                         f"AFlow Programmer failed after {max_attempts} attempts"
                     )
-                value = rf"\boxed{{{executed.value}}}"
+                value = format_final_answer(executed.value)
+                output_complete = True
             values[node_id] = value
+            complete_outputs[node_id] = output_complete
             trace.append(
                 {
                     "id": node_id,
@@ -301,6 +325,11 @@ class AFlowAdapter(MethodAdapter):
         return replace(
             last_generation,
             text=values[workflow["output"]],
+            finish_reason=(
+                "stop"
+                if complete_outputs[workflow["output"]]
+                else last_generation.finish_reason
+            ),
             metadata={
                 **last_generation.metadata,
                 "method": "aflow",

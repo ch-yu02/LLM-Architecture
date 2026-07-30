@@ -7,4 +7,4 @@ uses_tools = false
 
 [prompt]
 strategy = "zero_shot_chain_of_thought"
-final_answer_instruction = "state clearly; use boxed form when appropriate"
+final_answer_instruction = "provided by the selected dataset"

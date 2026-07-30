@@ -9,7 +9,7 @@ from benchmark_core.schema import Generation, Problem
 from executors import RestrictedPythonExecutor
 
 from .base import MethodAdapter
-from .pal import extract_python_code
+from .pal import extract_python_code, format_final_answer
 
 
 class SelfRefineAdapter(MethodAdapter):
@@ -112,7 +112,8 @@ class SelfRefineAdapter(MethodAdapter):
         executed = self.executor.execute(solution)
         return replace(
             current_generation,
-            text=rf"\boxed{{{executed.value}}}",
+            text=format_final_answer(executed.value),
+            finish_reason="stop",
             metadata={
                 **current_generation.metadata,
                 "method": "self_refine",

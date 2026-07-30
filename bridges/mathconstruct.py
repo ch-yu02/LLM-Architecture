@@ -39,6 +39,7 @@ def main() -> None:
             "details": {
                 "checker_details": details,
                 "official_checker": "MathConstruct/parse_and_check",
+                "finish_reason": request.get("finish_reason", "stop"),
             },
         }
     json.dump(response, sys.stdout, ensure_ascii=False, default=_json_default)

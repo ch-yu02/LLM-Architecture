@@ -94,6 +94,7 @@ def _compact_score_details(details: dict[str, Any]) -> dict[str, Any]:
             for key in (
                 "verdict",
                 "verdict_parse_status",
+                "finish_reason",
                 "usage",
                 "latency_seconds",
             )

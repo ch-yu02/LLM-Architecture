@@ -125,6 +125,26 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(direct_messages[0], cot_messages[0])
         self.assertIn("reasoning step by step", cot_messages[1]["content"])
         self.assertNotIn("reasoning step by step", direct_messages[1]["content"])
+        harp_backend = RecordingBackend()
+        get_method("direct").run(
+            Problem(
+                "harp",
+                "one",
+                "What is 1+1?",
+                "2",
+                answer_instruction=(
+                    "End the response with exactly one final line in the form "
+                    "`Answer: \\boxed{...}`. Do not write anything after that line."
+                ),
+            ),
+            harp_backend,
+            config={},
+        )
+        harp_prompt = harp_backend.calls[0]["messages"][1]["content"]
+        self.assertTrue(
+            harp_prompt.endswith("Do not write anything after that line.")
+        )
+        self.assertIn(r"Answer: \boxed{...}", harp_prompt)
 
     def test_call_budget_and_overrides_are_enforced(self):
         cases = (TwoCallMethod(), OverrideMethod())

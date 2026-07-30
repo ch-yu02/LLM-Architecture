@@ -10,7 +10,7 @@ from benchmark_datasets import get_dataset, list_datasets
 from benchmark_datasets.base import DatasetContext
 from benchmark_datasets.registry import register_dataset
 from scorers.judge import JudgeDecision, JudgeRequiredError, JudgeVerdict
-from scorers.numeric import NumericAnswerScorer
+from scorers.numeric import NumericAnswerScorer, extract_numeric_submission
 
 
 DATA_ROOT = Path(
@@ -111,6 +111,58 @@ class DatasetTests(unittest.TestCase):
         scorer = NumericAnswerScorer()
         self.assertTrue(scorer.score(problem, Generation(r"\boxed{1024}")).correct)
         self.assertFalse(scorer.score(problem, Generation("1025")).correct)
+
+    def test_gsm1k_explicit_final_answer_has_priority(self):
+        scorer = NumericAnswerScorer()
+        problem = Problem("gsm1k", "x", "question", "42")
+        score = scorer.score(
+            problem,
+            Generation(r"An earlier result was \boxed{41}." "\nAnswer: 42"),
+        )
+        self.assertTrue(score.correct)
+        self.assertEqual(score.details["answer_extraction"], "final_answer_line")
+
+        malformed = scorer.score(
+            problem,
+            Generation(r"The reasoning reached 42." "\nAnswer: unknown"),
+        )
+        self.assertFalse(malformed.correct)
+        self.assertIsNone(malformed.extracted_answer)
+        self.assertEqual(
+            malformed.details["answer_extraction"], "final_answer_line"
+        )
+
+    def test_numeric_extraction_fallback_order(self):
+        self.assertEqual(
+            extract_numeric_submission(r"old \boxed{1}; new \boxed{2}"),
+            ("2", "last_complete_boxed"),
+        )
+        self.assertEqual(
+            extract_numeric_submission("reasoning 1, final value 2"),
+            ("2", "last_number_fallback"),
+        )
+
+    def test_dataset_answer_instructions_match_scorers(self):
+        context = DatasetContext(DATA_ROOT)
+        expected_fragments = {
+            "gsm1k": "Answer: <number>",
+            "math-perturb": r"\boxed{...}",
+            "harp": r"Answer: \boxed{...}",
+            "harp-small": r"Answer: \boxed{...}",
+            "u-math-text-only": r"\boxed{...}",
+            "mathconstruct": "",
+        }
+        for name, fragment in expected_fragments.items():
+            with self.subTest(dataset=name):
+                problem = next(iter(get_dataset(name).iter_problems(context)))
+                self.assertEqual(
+                    problem.answer_instruction,
+                    get_dataset(name).answer_instruction,
+                )
+                if fragment:
+                    self.assertIn(fragment, problem.answer_instruction)
+                else:
+                    self.assertEqual(problem.answer_instruction, "")
 
     def test_u_math_requires_explicit_judge(self):
         plugin = get_dataset("u-math-text-only")

@@ -48,5 +48,6 @@ class UMathJudgeScorer:
                 "judge_verdict": decision.verdict.value,
                 "judge_rationale": decision.rationale,
                 "judge_metadata": decision.metadata,
+                "candidate_finish_reason": generation.finish_reason,
             },
         )

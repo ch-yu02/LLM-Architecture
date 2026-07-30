@@ -8,8 +8,9 @@ from scorers.model_judge import ModelJudgeBackend, judge_protocol_metadata
 
 
 class StaticJudgeBackend:
-    def __init__(self, output: str):
+    def __init__(self, output: str, *, finish_reason: str = "stop"):
         self.output = output
+        self.finish_reason = finish_reason
         self.messages = None
         self.config = None
 
@@ -18,6 +19,7 @@ class StaticJudgeBackend:
         self.config = config
         return Generation(
             self.output,
+            finish_reason=self.finish_reason,
             latency_seconds=0.25,
             usage={"total_tokens": 12},
         )
@@ -76,9 +78,35 @@ class ModelJudgeTests(unittest.TestCase):
         self.assertEqual(decision.verdict, JudgeVerdict.INCONCLUSIVE)
         self.assertEqual(
             decision.metadata["verdict_parse_status"],
-            "malformed-output-fallback",
+            "malformed-final-line-fallback",
         )
         self.assertFalse(decision.correct)
+
+    def test_only_the_final_nonempty_line_can_supply_the_verdict(self):
+        _, decision = self._judge("No\nThe final comparison was ambiguous.")
+        self.assertEqual(decision.verdict, JudgeVerdict.INCONCLUSIVE)
+        self.assertEqual(
+            decision.metadata["verdict_parse_status"],
+            "malformed-final-line-fallback",
+        )
+
+    def test_non_stop_judge_generation_is_inconclusive(self):
+        backend = StaticJudgeBackend("Reasoning.\nYes", finish_reason="length")
+        judge = ModelJudgeBackend(
+            backend,
+            model_name="candidate",
+            inference_config={"temperature": 0.0},
+        )
+        decision = judge.judge(
+            Problem("u-math-text-only", "one", "Compute 1+1.", "2"),
+            "The answer is 2.",
+        )
+        self.assertEqual(decision.verdict, JudgeVerdict.INCONCLUSIVE)
+        self.assertEqual(
+            decision.metadata["verdict_parse_status"],
+            "judge-non-stop-fallback",
+        )
+        self.assertEqual(decision.metadata["finish_reason"], "length")
 
     def test_score_preserves_tristate_verdict_and_parse_status(self):
         backend = StaticJudgeBackend("Unable to decide.\nInconclusive")
@@ -97,6 +125,7 @@ class ModelJudgeTests(unittest.TestCase):
             score.details["judge_metadata"]["verdict_parse_status"],
             "standalone-final-line",
         )
+        self.assertEqual(score.details["candidate_finish_reason"], "stop")
 
     def test_protocol_metadata_records_the_local_adaptation(self):
         self.assertEqual(

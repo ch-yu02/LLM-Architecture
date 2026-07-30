@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from adapters import AFlowAdapter, PALAdapter, SelfRefineAdapter
+from adapters.pal import format_final_answer
 from benchmark_core.fairness import FairnessPolicy
 from benchmark_core.runner import EvaluationRunner
 from benchmark_core.schema import Experiment, Generation, Problem
@@ -28,8 +29,11 @@ class QueueBackend:
         self.calls.append({"messages": messages, "config": config})
         if not self.responses:
             raise AssertionError("No fake response remaining")
+        response = self.responses.pop(0)
+        if isinstance(response, Generation):
+            return response
         return Generation(
-            self.responses.pop(0),
+            response,
             usage={"input_tokens": 10, "output_tokens": 5},
         )
 
@@ -86,6 +90,16 @@ class MethodAdapterTests(unittest.TestCase):
         )
         self.assertEqual(result.value, "2")
 
+    def test_final_answer_envelope_does_not_double_wrap(self):
+        self.assertEqual(
+            format_final_answer(r"Answer: \boxed{\frac{1}{2}}"),
+            r"Answer: \boxed{\frac{1}{2}}",
+        )
+        self.assertEqual(
+            format_final_answer(r"\boxed{2} trailing"),
+            r"Answer: \boxed{\boxed{2} trailing}",
+        )
+
     def test_restricted_executor_rejects_imports_and_private_access(self):
         executor = RestrictedPythonExecutor()
         for code in (
@@ -106,7 +120,8 @@ class MethodAdapterTests(unittest.TestCase):
         backend = QueueBackend(["```python\ndef solution():\n    return 2\n```"])
         summary, record = self.run_method(PALAdapter(self.pal_source), backend)
         self.assertEqual((summary.scored, summary.correct), (1, 1))
-        self.assertEqual(record["generation"]["text"], r"\boxed{2}")
+        self.assertEqual(record["generation"]["text"], r"Answer: \boxed{2}")
+        self.assertEqual(record["generation"]["finish_reason"], "stop")
         self.assertIn("three examples", backend.calls[0]["messages"][1]["content"])
         self.assertEqual(record["generation"]["model_calls"], 1)
 
@@ -188,8 +203,21 @@ class MethodAdapterTests(unittest.TestCase):
             ),
         )
         self.assertEqual((summary.scored, summary.correct), (1, 1))
-        self.assertEqual(record["generation"]["text"], "2")
+        self.assertEqual(record["generation"]["text"], r"Answer: \boxed{2}")
         self.assertEqual(record["generation"]["model_calls"], 3)
+
+    def test_successful_program_output_is_complete_even_if_code_call_hit_length(self):
+        backend = QueueBackend(
+            [
+                Generation(
+                    "```python\ndef solution():\n    return 2\n```",
+                    finish_reason="length",
+                )
+            ]
+        )
+        summary, record = self.run_method(PALAdapter(self.pal_source), backend)
+        self.assertEqual((summary.scored, summary.correct), (1, 1))
+        self.assertEqual(record["generation"]["finish_reason"], "stop")
 
     def test_aflow_rejects_unfrozen_workflow(self):
         backend = QueueBackend(["unused"])

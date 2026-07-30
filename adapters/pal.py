@@ -23,6 +23,38 @@ def extract_python_code(text: str) -> str:
     return text.strip()
 
 
+def format_final_answer(value: Any) -> str:
+    """Wrap a method-produced answer in the shared textual envelope."""
+
+    text = str(value).strip()
+    if text.lower().startswith("answer:"):
+        text = text.split(":", 1)[1].strip()
+    if _is_complete_box(text):
+        return f"Answer: {text}"
+    return rf"Answer: \boxed{{{text}}}"
+
+
+def _is_complete_box(text: str) -> bool:
+    if not text.startswith(r"\boxed{"):
+        return False
+    depth = 0
+    escaped = False
+    for index, character in enumerate(text[len(r"\boxed") :], len(r"\boxed")):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return index == len(text) - 1
+    return False
+
+
 class PALAdapter(MethodAdapter):
     name = "pal"
     required_paths = ("pal/core/interface.py", "pal/prompt/math_prompts.py")
@@ -67,7 +99,8 @@ class PALAdapter(MethodAdapter):
         executed = self.executor.execute(code)
         return replace(
             response,
-            text=rf"\boxed{{{executed.value}}}",
+            text=format_final_answer(executed.value),
+            finish_reason="stop",
             metadata={
                 **response.metadata,
                 "method": "pal",

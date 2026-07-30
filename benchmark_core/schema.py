@@ -21,6 +21,7 @@ class Problem:
     prompt: str
     reference_answer: Any | None = None
     metadata: JsonObject = field(default_factory=dict)
+    answer_instruction: str = ""
 
 
 @dataclass(frozen=True)

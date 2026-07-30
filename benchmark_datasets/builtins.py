@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
@@ -20,12 +21,17 @@ _BRIDGES = Path(__file__).resolve().parents[1] / "bridges"
 class JsonlPlugin:
     aliases: tuple[str, ...] = ()
     evaluation_scope = "test"
+    answer_instruction = ""
     filename: str
 
     def iter_problems(self, context: DatasetContext) -> Iterable[Problem]:
-        return iter_unified_jsonl(
+        for problem in iter_unified_jsonl(
             context.data_root / "data" / "processed" / self.filename, self.name
-        )
+        ):
+            yield replace(
+                problem,
+                answer_instruction=self.answer_instruction,
+            )
 
     def problem_count(self, context: DatasetContext) -> int:
         path = context.data_root / "data" / "processed" / self.filename
@@ -39,6 +45,10 @@ class GSM1KPlugin(JsonlPlugin):
     name = "gsm1k"
     aliases = ("GSM1K",)
     filename = "gsm1k.jsonl"
+    answer_instruction = (
+        "End your response with a separate final line in the form "
+        "`Answer: <number>`."
+    )
 
     def create_scorer(self, context: DatasetContext) -> NumericAnswerScorer:
         return NumericAnswerScorer()
@@ -48,6 +58,7 @@ class MathPerturbPlugin(JsonlPlugin):
     name = "math-perturb"
     aliases = ("math_perturb", "MATH-Perturb")
     filename = "math_perturb_test.jsonl"
+    answer_instruction = "Put the final answer in `\\boxed{...}`."
 
     def create_scorer(self, context: DatasetContext) -> OfficialBridgeScorer:
         bridge = JsonSubprocessBridge(
@@ -62,6 +73,10 @@ class HARPPlugin(JsonlPlugin):
     name = "harp"
     aliases = ("HARP",)
     filename = "harp_test.jsonl"
+    answer_instruction = (
+        "End the response with exactly one final line in the form "
+        "`Answer: \\boxed{...}`. Do not write anything after that line."
+    )
 
     def create_scorer(self, context: DatasetContext) -> OfficialBridgeScorer:
         bridge = JsonSubprocessBridge(
@@ -83,6 +98,7 @@ class UMathPlugin(JsonlPlugin):
     name = "u-math-text-only"
     aliases = ("u_math_text_only", "U-MATH text-only")
     filename = "u_math_text_only_test.jsonl"
+    answer_instruction = "Put the final answer in `\\boxed{...}`."
 
     def create_scorer(self, context: DatasetContext) -> UMathJudgeScorer:
         return UMathJudgeScorer(context.judge)

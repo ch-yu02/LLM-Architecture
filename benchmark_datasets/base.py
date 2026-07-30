@@ -23,6 +23,7 @@ class DatasetContext:
 class DatasetPlugin(Protocol):
     name: str
     aliases: tuple[str, ...]
+    answer_instruction: str
 
     def iter_problems(self, context: DatasetContext) -> Iterable[Problem]: ...
 

@@ -210,6 +210,10 @@ class OpenAI:
                 manifest["configuration"]["dataset_scope"],
                 "test",
             )
+            self.assertIn(
+                "Answer: <number>",
+                manifest["configuration"]["dataset_answer_instruction"],
+            )
 
             continued = subprocess.run(
                 [
@@ -434,7 +438,9 @@ class OpenAI:
                 0,
                 harp_small.stderr or harp_small.stdout,
             )
-            harp_small_directory = next(harp_small_output.iterdir())
+            harp_small_directory = next(
+                path for path in harp_small_output.iterdir() if path.is_dir()
+            )
             harp_small_manifest = json.loads(
                 (harp_small_directory / "experiment.json").read_text(
                     encoding="utf-8"

@@ -15,7 +15,7 @@ PROTOCOL_VERSION = 1
 _VERDICT_LINE = re.compile(
     r"^\s*(?:final\s+verdict\s*[:\-]\s*)?"
     r"(Yes|No|Inconclusive)\s*[.!]?\s*$",
-    flags=re.IGNORECASE | re.MULTILINE,
+    flags=re.IGNORECASE,
 )
 
 
@@ -31,10 +31,13 @@ def judge_protocol_metadata() -> dict[str, Any]:
 
 
 def _parse_verdict(text: str) -> tuple[JudgeVerdict, str]:
-    matches = list(_VERDICT_LINE.finditer(text))
-    if not matches:
+    nonempty_lines = [line for line in text.splitlines() if line.strip()]
+    if not nonempty_lines:
         return JudgeVerdict.INCONCLUSIVE, "malformed-output-fallback"
-    normalized = matches[-1].group(1).lower()
+    match = _VERDICT_LINE.fullmatch(nonempty_lines[-1])
+    if match is None:
+        return JudgeVerdict.INCONCLUSIVE, "malformed-final-line-fallback"
+    normalized = match.group(1).lower()
     verdict = {
         "yes": JudgeVerdict.YES,
         "no": JudgeVerdict.NO,
@@ -82,7 +85,11 @@ Use "Inconclusive" only when you cannot reliably determine whether the solution 
             config=self.inference_config,
         )
         text = generation.text.strip()
-        verdict, parse_status = _parse_verdict(text)
+        if generation.finish_reason != "stop":
+            verdict = JudgeVerdict.INCONCLUSIVE
+            parse_status = "judge-non-stop-fallback"
+        else:
+            verdict, parse_status = _parse_verdict(text)
         return JudgeDecision(
             verdict,
             text,
@@ -92,5 +99,6 @@ Use "Inconclusive" only when you cannot reliably determine whether the solution 
                 "verdict_parse_status": parse_status,
                 "usage": generation.usage,
                 "latency_seconds": generation.latency_seconds,
+                "finish_reason": generation.finish_reason,
             },
         )

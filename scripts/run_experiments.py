@@ -785,6 +785,9 @@ def main() -> int:
                             "dataset_scope": getattr(
                                 plugin, "evaluation_scope", "test"
                             ),
+                            "dataset_answer_instruction": getattr(
+                                plugin, "answer_instruction", ""
+                            ),
                             "repeat": repeat_index,
                             "run_tag": args.run_tag,
                             "judge": public_judge,

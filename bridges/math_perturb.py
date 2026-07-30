@@ -28,7 +28,10 @@ def main() -> None:
         {
             "correct": bool(correct),
             "extracted_answer": predicted,
-            "details": {"official_checker": "MATH-Perturb/evaluate.py"},
+            "details": {
+                "official_checker": "MATH-Perturb/evaluate.py",
+                "finish_reason": request.get("finish_reason", "stop"),
+            },
         },
         sys.stdout,
         ensure_ascii=False,
