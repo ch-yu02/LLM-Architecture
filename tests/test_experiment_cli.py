@@ -112,6 +112,8 @@ class OpenAI:
                 "gsm1k",
                 "--batch-size",
                 "1",
+                "--concurrency",
+                "2",
                 "--seed",
                 "1234",
                 "--data-root",
@@ -191,7 +193,13 @@ class OpenAI:
             )
 
             continued = subprocess.run(
-                [*command, "--batch-size", "2"],
+                [
+                    *command,
+                    "--batch-size",
+                    "2",
+                    "--concurrency",
+                    "3",
+                ],
                 cwd=ROOT,
                 env=environment,
                 text=True,
@@ -225,6 +233,7 @@ class OpenAI:
             self.assertEqual(summary["run"]["resumed"], 1)
             self.assertEqual(summary["run"]["attempted"], 2)
             self.assertEqual(summary["invocation"]["batch_size"], 2)
+            self.assertEqual(summary["invocation"]["concurrency"], 3)
             self.assertEqual(summary["aggregate"]["records"], 3)
 
             changed = subprocess.run(

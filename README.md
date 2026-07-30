@@ -80,6 +80,7 @@ cp .env.example .env
   --datasets gsm1k \
   --repeats 3 \
   --batch-size 1 \
+  --concurrency 4 \
   --seed 1234 \
   --seed-mode increment
 ```
@@ -87,7 +88,9 @@ cp .env.example .env
 脚本支持方法 × 数据集 × 重复轮次矩阵、样本级断点续跑、方法专属参数以及实时
 latency/token/进度显示。`--seed` 会传给所有模型调用并纳入实验指纹；
 `--seed-mode increment` 使各 repeat 依次使用 `seed + repeat_index - 1`，默认
-`fixed` 则使用相同 seed。不指定 seed 时不发送该参数。实验记录使用单层目录：
+`fixed` 则使用相同 seed。不指定 seed 时不发送该参数。`--concurrency` 控制每个
+实验单元内同时处理的样本数，默认 `1`；矩阵中的不同单元仍按顺序执行。并发数不
+进入实验指纹，续跑时可以调整。实验记录使用单层目录：
 
 ```text
 results/experiments/
@@ -130,6 +133,33 @@ TPR、TNR、PPV、NPV 及候选答案来源模型切片；普通 U-MATH 实验�
 用于比较 judge 的官方 µ-MATH 数据位于数据仓库
 `data/processed/mu_math.jsonl`，论文 Table 5 的结构化结果位于
 `data/mu_math/official_results.json`。
+
+候选 judge 使用独立的精简脚本测试，不依赖尚未锁定的正式 U-MATH 配置：
+
+```bash
+# 只检查 profile、数据、样本量和输出位置，不调用 API
+./scripts/run_mu_math.sh --judge qwen35_flash --batch-size 10 --dry-run
+
+# 每次顺序处理接下来的 100 行；保持 judge profile 不变即可样本级续跑
+./scripts/run_mu_math.sh \
+  --judge qwen35_flash \
+  --batch-size 100 \
+  --concurrency 8
+
+# 处理当前候选 judge 的全部剩余行
+./scripts/run_mu_math.sh --judge qwen35_flash --batch-size all
+```
+
+该入口只保留 µ-MATH 候选测试需要的参数，不提供方法/数据集矩阵、repeat、被测模型
+覆盖或 checker 设置。每个 profile 定义一套完全固定的 judge 模型和推理参数；
+可通过 `--judge /absolute/path/to/candidate.toml` 测试其他候选。结果会报告总体及
+四种候选答案来源模型切片的 macro-F1、TPR、TNR、PPV、NPV 和 Inconclusive 数量。
+Inconclusive 不映射为任一二元预测，对其真实类别计为漏判，并始终计作错误。
+
+两个入口的 `--concurrency` 都只改变调度，不改变实验定义，默认值均为 `1`。记录由
+主线程按数据集原始顺序写入，因此并发完成顺序不会影响断点续跑。profile 中的
+`min_request_interval_seconds` 仍对共享 backend 的所有请求生效；如果它设为
+`1.0`，请求启动最多约每秒一次，即使提高并发数也只会重叠等待响应，不会绕过限速。
 
 ## 环境与测试
 

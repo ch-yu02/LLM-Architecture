@@ -107,6 +107,20 @@ def _parse_batch_size(value: str) -> int | None:
     return size
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "value must be a positive integer"
+        ) from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(
+            "value must be a positive integer"
+        )
+    return parsed
+
+
 def _repeat_inference_config(
     inference: dict[str, Any],
     *,
@@ -347,6 +361,12 @@ def parse_args() -> argparse.Namespace:
         default="1",
         metavar="N|all",
         help="Run the next N unfinished samples per cell, or all remaining",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=1,
+        help="Concurrent samples within each experiment cell (default: 1)",
     )
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
@@ -619,6 +639,7 @@ def main() -> int:
         "Batch size",
         "all remaining" if args.batch_size is None else str(args.batch_size),
     )
+    table.add_row("Concurrency", str(args.concurrency))
     table.add_row(
         "Max new samples",
         f"{sample_count:,} across {cell_count} cells",
@@ -923,6 +944,7 @@ def main() -> int:
                             inference_config=repeat_inference,
                             fairness_policy=policy,
                             batch_size=args.batch_size,
+                            concurrency=args.concurrency,
                             record_callback=on_record,
                         )
                         aggregate = summarize_records(store.read())
@@ -935,6 +957,7 @@ def main() -> int:
                             "invocation_seconds": cell_elapsed,
                             "invocation": {
                                 "batch_size": args.batch_size,
+                                "concurrency": args.concurrency,
                                 "completed_before": len(completed_before),
                                 "target_new_samples": invocation_target,
                             },

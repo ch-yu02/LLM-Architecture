@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,17 +12,21 @@ class BridgeError(RuntimeError):
     pass
 
 
+_INTEGER_JSON_LOCK = threading.Lock()
+
+
 def _json_with_unlimited_trusted_integers(
     operation: Callable[[], Any],
 ) -> Any:
     if not hasattr(sys, "set_int_max_str_digits"):
         return operation()
-    previous_limit = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(0)
-    try:
-        return operation()
-    finally:
-        sys.set_int_max_str_digits(previous_limit)
+    with _INTEGER_JSON_LOCK:
+        previous_limit = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(0)
+        try:
+            return operation()
+        finally:
+            sys.set_int_max_str_digits(previous_limit)
 
 
 class JsonSubprocessBridge:

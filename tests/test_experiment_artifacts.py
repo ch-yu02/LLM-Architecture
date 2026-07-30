@@ -206,7 +206,7 @@ class ExperimentArtifactTests(unittest.TestCase):
             {
                 "temperature": 0.0,
                 "top_p": 1.0,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 4096,
                 "seed": 20260729,
             },
         )

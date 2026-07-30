@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -27,6 +29,26 @@ class RecordingBackend:
     def generate(self, messages, *, config):
         self.calls.append({"messages": messages, "config": config})
         return Generation(self.answer, usage={"output_tokens": 5})
+
+
+class ConcurrentBackend:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    def generate(self, messages, *, config):
+        prompt = messages[-1]["content"]
+        index = int(prompt.split("What is ", 1)[1].split("+", 1)[0])
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.03 * (3 - index))
+            return Generation(rf"\boxed{{{index}}}")
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 class ThreeProblemPlugin:
@@ -147,6 +169,35 @@ class BaselineTests(unittest.TestCase):
                 ["0", "1", "2"],
             )
 
+    def test_concurrent_samples_are_persisted_in_dataset_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlResultStore(Path(directory) / "result.jsonl")
+            backend = ConcurrentBackend()
+            callback_ids = []
+            summary = EvaluationRunner().run(
+                experiment=Experiment(
+                    "concurrent", "tiny", "direct", "model"
+                ),
+                plugin=ThreeProblemPlugin(),
+                context=DatasetContext(Path(directory)),
+                method=get_method("direct"),
+                backend=backend,
+                store=store,
+                batch_size=3,
+                concurrency=3,
+                record_callback=lambda record: callback_ids.append(
+                    record.problem.id
+                ),
+            )
+            self.assertEqual(summary.attempted, 3)
+            self.assertEqual(summary.errors, 0)
+            self.assertGreaterEqual(backend.max_active, 2)
+            self.assertEqual(
+                [item["problem"]["id"] for item in store.read()],
+                ["0", "1", "2"],
+            )
+            self.assertEqual(callback_ids, ["0", "1", "2"])
+
     def test_reused_experiment_id_cannot_change_model(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JsonlResultStore(Path(directory) / "result.jsonl")
@@ -196,4 +247,18 @@ class BaselineTests(unittest.TestCase):
                     backend=RecordingBackend(),
                     store=JsonlResultStore(Path(directory) / "result.jsonl"),
                     batch_size=0,
+                )
+            with self.assertRaises(ValueError):
+                EvaluationRunner().run(
+                    experiment=Experiment(
+                        "concurrency", "tiny", "direct", "model"
+                    ),
+                    plugin=ThreeProblemPlugin(),
+                    context=DatasetContext(Path(directory)),
+                    method=get_method("direct"),
+                    backend=RecordingBackend(),
+                    store=JsonlResultStore(
+                        Path(directory) / "concurrency.jsonl"
+                    ),
+                    concurrency=0,
                 )

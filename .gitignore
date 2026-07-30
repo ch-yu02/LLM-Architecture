@@ -9,5 +9,6 @@ docs/
 results/raw/
 results/smoke/
 results/experiments/
+results/mu_math/
 outputs/
 logs/

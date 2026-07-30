@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
+from benchmark_core.concurrency import ordered_parallel_map
 from benchmark_core.runner import EvaluationRunner
 from benchmark_core.schema import (
     EvaluationRecord,
@@ -45,6 +48,26 @@ class TinyPlugin:
 
 
 class CoreTests(unittest.TestCase):
+    def test_parallel_map_bounds_in_flight_work_and_preserves_order(self):
+        started = []
+        lock = threading.Lock()
+
+        def work(value):
+            with lock:
+                started.append(value)
+            time.sleep(0.02 * (3 - value))
+            return value
+
+        results = ordered_parallel_map(
+            work,
+            range(3),
+            concurrency=2,
+            thread_name_prefix="test-bounded",
+        )
+        self.assertEqual(next(results), 0)
+        self.assertEqual(started, [0, 1])
+        self.assertEqual(list(results), [1, 2])
+
     def test_store_rejects_concurrent_runs_for_the_same_experiment(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JsonlResultStore(Path(directory) / "results.jsonl")
