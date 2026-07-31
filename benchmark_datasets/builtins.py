@@ -22,6 +22,7 @@ class JsonlPlugin:
     aliases: tuple[str, ...] = ()
     evaluation_scope = "test"
     answer_instruction = ""
+    revision_paths: tuple[str, ...] = ()
     filename: str
 
     def iter_problems(self, context: DatasetContext) -> Iterable[Problem]:
@@ -58,6 +59,7 @@ class MathPerturbPlugin(JsonlPlugin):
     name = "math-perturb"
     aliases = ("math_perturb", "MATH-Perturb")
     filename = "math_perturb_test.jsonl"
+    revision_paths = ("data/math_perturb/source",)
     answer_instruction = "Put the final answer in `\\boxed{...}`."
 
     def create_scorer(self, context: DatasetContext) -> OfficialBridgeScorer:
@@ -73,6 +75,7 @@ class HARPPlugin(JsonlPlugin):
     name = "harp"
     aliases = ("HARP",)
     filename = "harp_test.jsonl"
+    revision_paths = ("data/harp",)
     answer_instruction = (
         "End the response with exactly one final line in the form "
         "`Answer: \\boxed{...}`. Do not write anything after that line."
@@ -108,6 +111,7 @@ class MathConstructPlugin(JsonlPlugin):
     name = "mathconstruct"
     aliases = ("MathConstruct",)
     filename = "mathconstruct_test.jsonl"
+    revision_paths = ("data/mathconstruct/source",)
 
     def _bridge(self, context: DatasetContext) -> JsonSubprocessBridge:
         return JsonSubprocessBridge(

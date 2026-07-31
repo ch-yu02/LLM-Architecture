@@ -75,7 +75,7 @@ runner 只依赖 `DatasetPlugin` 协议，不包含数据集名称分支。新�
 .venv-checkers/bin/pip install -r requirements/experiment-lock.txt
 .venv-checkers/bin/pip install -e . --no-deps
 cp .env.example .env
-# 编辑 .env，填入 DASHSCOPE_API_KEY_BEIJING
+# 编辑 .env，填入本次使用的 profile 对应 API key
 ./scripts/run_experiments.sh \
   --methods direct \
   --datasets gsm1k \
@@ -143,21 +143,23 @@ TPR、TNR、PPV、NPV 及候选答案来源模型切片；普通 U-MATH 实验�
 
 ```bash
 # 只检查 profile、数据、样本量和输出位置，不调用 API
-./scripts/run_mu_math.sh --judge qwen35_flash --batch-size 10 --dry-run
+./scripts/run_mu_math.sh --judge qwen37_flash --batch-size 10 --dry-run
 
 # 每次顺序处理接下来的 100 行；保持 judge profile 不变即可样本级续跑
 ./scripts/run_mu_math.sh \
-  --judge qwen35_flash \
+  --judge qwen37_flash \
   --batch-size 100 \
   --concurrency 8
 
 # 处理当前候选 judge 的全部剩余行
-./scripts/run_mu_math.sh --judge qwen35_flash --batch-size all
+./scripts/run_mu_math.sh --judge deepseek_v4_pro --batch-size all
 ```
 
 该入口只保留 µ-MATH 候选测试需要的参数，不提供方法/数据集矩阵、repeat、被测模型
 覆盖或 checker 设置。每个 profile 定义一套完全固定的 judge 模型和推理参数；
-可通过 `--judge /absolute/path/to/candidate.toml` 测试其他候选。结果会报告总体及
+内置 `qwen35_flash`、`qwen37_flash`、`deepseek_v4_pro` 和
+`deepseek_v4_flash`，也可通过
+`--judge /absolute/path/to/candidate.toml` 测试其他候选。结果会报告总体及
 四种候选答案来源模型切片的 macro-F1、TPR、TNR、PPV、NPV 和 Inconclusive 数量。
 Inconclusive 不映射为任一二元预测，对其真实类别计为漏判，并始终计作错误。
 

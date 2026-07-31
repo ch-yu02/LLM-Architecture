@@ -7,7 +7,7 @@ from pathlib import Path
 from adapters import AFlowAdapter, PALAdapter, SelfRefineAdapter
 from adapters.pal import format_final_answer
 from benchmark_core.fairness import FairnessPolicy
-from benchmark_core.runner import EvaluationRunner
+from benchmark_core.runner import EvaluationRunner, SampleEvaluationError
 from benchmark_core.schema import Experiment, Generation, Problem
 from benchmark_core.store import JsonlResultStore
 from benchmark_datasets.base import DatasetContext
@@ -221,21 +221,24 @@ class MethodAdapterTests(unittest.TestCase):
 
     def test_aflow_rejects_unfrozen_workflow(self):
         backend = QueueBackend(["unused"])
-        summary, record = self.run_method(
-            AFlowAdapter(self.aflow_source),
-            backend,
-            method_config={
-                "workflow_artifact": {
-                    "source": "online",
-                    "optimization_split": "test",
-                    "optimization_cost": 0,
-                    "evaluation_data_used": True,
-                    "frozen": False,
-                }
-            },
+        with self.assertRaises(SampleEvaluationError) as caught:
+            self.run_method(
+                AFlowAdapter(self.aflow_source),
+                backend,
+                method_config={
+                    "workflow_artifact": {
+                        "source": "online",
+                        "optimization_split": "test",
+                        "optimization_cost": 0,
+                        "evaluation_data_used": True,
+                        "frozen": False,
+                    }
+                },
+            )
+        self.assertIn(
+            "frozen workflow_artifact",
+            caught.exception.record.score.error,
         )
-        self.assertEqual(summary.errors, 1)
-        self.assertIn("frozen workflow_artifact", record["score"]["error"])
 
     def test_aflow_programmer_retries_with_execution_feedback(self):
         workflow = {

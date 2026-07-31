@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import subprocess
 import sys
 import time
 import traceback
@@ -27,6 +28,7 @@ from benchmark_experiments.artifacts import (  # noqa: E402
     ensure_experiment_manifest,
     git_revision,
     python_environment_state,
+    safe_slug,
     summarize_api_calls,
     timestamped_experiment_directory,
     tree_fingerprint,
@@ -47,6 +49,10 @@ DATASET_NAME = "mu-math"
 DEFAULT_DATA_ROOT = ROOT.parent / "math-benchmark-data"
 DEFAULT_OUTPUT_ROOT = ROOT / "results" / "mu_math"
 DEFAULT_JUDGE = "qwen35_flash"
+
+
+class MuMathSampleError(RuntimeError):
+    pass
 
 
 def _parse_batch_size(value: str) -> int | None:
@@ -94,6 +100,123 @@ def _resolve_judge_path(value: str) -> Path:
     raise ModelConfigurationError(
         f"Unknown judge candidate profile or TOML path: {value}"
     )
+
+
+def _experiment_identity(
+    configuration: dict[str, Any],
+    *,
+    dataset_blob: str | None = None,
+) -> dict[str, Any]:
+    """Return settings that must remain identical for sample-level resume."""
+
+    identity = json.loads(json.dumps(configuration))
+    revisions = identity.get("revisions")
+    if isinstance(revisions, dict):
+        revisions.pop("runner_git", None)
+        revisions.pop("runner_tree", None)
+        revisions.pop("data", None)
+        if not revisions:
+            identity.pop("revisions")
+    if dataset_blob is not None:
+        identity["dataset_blob"] = dataset_blob
+    profile = identity.get("judge_profile")
+    if isinstance(profile, dict):
+        if profile.get("thinking_type") is None:
+            profile.pop("thinking_type", None)
+        if profile.get("reasoning_effort") is None:
+            profile.pop("reasoning_effort", None)
+        if profile.get("omit_sampling_parameters") is False:
+            profile.pop("omit_sampling_parameters", None)
+    return identity
+
+
+def _git_file_blob(data_root: Path, *, revision: str, relative_path: Path) -> str:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(data_root),
+            "rev-parse",
+            f"{revision}:{relative_path.as_posix()}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    blob = result.stdout.strip()
+    if result.returncode != 0 or not blob:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ExperimentArtifactError(
+            "Cannot resolve µ-MATH dataset blob at "
+            f"{revision}:{relative_path}: {detail}"
+        )
+    return blob
+
+
+def _find_resume_experiment(
+    output_root: Path,
+    *,
+    profile_name: str,
+    identity: dict[str, Any],
+    data_root: Path,
+    dataset_relative_path: Path,
+) -> tuple[Path, str, dict[str, Any]] | None:
+    if not output_root.is_dir():
+        return None
+    prefix = f"{safe_slug(profile_name)}__mu-math__"
+    matches: list[tuple[Path, str, dict[str, Any]]] = []
+    for directory in sorted(output_root.iterdir()):
+        if not directory.is_dir() or not directory.name.startswith(prefix):
+            continue
+        manifest_path = directory / "experiment.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            fingerprint = manifest["fingerprint"]
+            stored_configuration = manifest["configuration"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ExperimentArtifactError(
+                f"Invalid experiment manifest: {manifest_path}"
+            ) from exc
+        if not (
+            isinstance(fingerprint, str)
+            and len(fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in fingerprint)
+            and isinstance(stored_configuration, dict)
+        ):
+            raise ExperimentArtifactError(
+                f"Invalid experiment manifest: {manifest_path}"
+            )
+        stored_blob = stored_configuration.get("dataset_blob")
+        if not isinstance(stored_blob, str):
+            try:
+                stored_revision = stored_configuration["revisions"]["data"][
+                    "revision"
+                ]
+            except (KeyError, TypeError) as exc:
+                raise ExperimentArtifactError(
+                    f"Manifest does not identify its dataset: {manifest_path}"
+                ) from exc
+            stored_blob = _git_file_blob(
+                data_root,
+                revision=str(stored_revision),
+                relative_path=dataset_relative_path,
+            )
+        if (
+            _experiment_identity(
+                stored_configuration,
+                dataset_blob=stored_blob,
+            )
+            == identity
+        ):
+            matches.append((directory, fingerprint, stored_configuration))
+    if len(matches) > 1:
+        raise ExperimentArtifactError(
+            "Multiple µ-MATH experiment directories have the same resumable "
+            f"configuration: {', '.join(str(item[0]) for item in matches)}"
+        )
+    return matches[0] if matches else None
 
 
 def _load_rows(path: Path) -> list[dict[str, Any]]:
@@ -499,6 +622,12 @@ def main() -> int:
         data_root = args.data_root.resolve()
         data_state = clean_git_repository_state(data_root)
         data_path = data_root / "data" / "processed" / "mu_math.jsonl"
+        data_relative_path = data_path.relative_to(data_root)
+        dataset_blob = _git_file_blob(
+            data_root,
+            revision=data_state["revision"],
+            relative_path=data_relative_path,
+        )
         rows = _load_rows(data_path)
         environment = python_environment_state(Path(sys.executable))
     except (
@@ -513,6 +642,7 @@ def main() -> int:
     configuration = {
         "dataset": DATASET_NAME,
         "dataset_scope": "official-test",
+        "dataset_blob": dataset_blob,
         "judge_profile": profile.public_dict(),
         "inference_config": inference,
         "protocol": judge_protocol_metadata(),
@@ -523,15 +653,32 @@ def main() -> int:
             "data": data_state,
         },
     }
-    fingerprint = configuration_fingerprint(configuration)
+    identity = _experiment_identity(configuration, dataset_blob=dataset_blob)
+    stable_fingerprint = configuration_fingerprint(identity)
     output_root = args.output_root.resolve()
     started_at = datetime.now(timezone.utc).isoformat()
-    directory = timestamped_experiment_directory(
-        output_root,
-        components=(profile.profile, "mu-math"),
-        fingerprint=fingerprint,
-        created_at=started_at,
-    )
+    try:
+        resume = _find_resume_experiment(
+            output_root,
+            profile_name=profile.profile,
+            identity=identity,
+            data_root=data_root,
+            dataset_relative_path=data_relative_path,
+        )
+    except ExperimentArtifactError as exc:
+        _report_error(console, "Resume validation failed", exc, debug=args.debug)
+        return 2
+    if resume is None:
+        fingerprint = stable_fingerprint
+        manifest_configuration = configuration
+        directory = timestamped_experiment_directory(
+            output_root,
+            components=(profile.profile, "mu-math"),
+            fingerprint=fingerprint,
+            created_at=started_at,
+        )
+    else:
+        directory, fingerprint, manifest_configuration = resume
     records_path = directory / "records.jsonl"
     api_path = directory / "api_calls.jsonl"
     errors_path = directory / "errors.jsonl"
@@ -616,20 +763,21 @@ def main() -> int:
         _report_error(console, "API preflight failed", exc, debug=args.debug)
         return 2
 
-    directory = timestamped_experiment_directory(
-        output_root,
-        components=(profile.profile, "mu-math"),
-        fingerprint=fingerprint,
-        created_at=started_at,
-        claim=True,
-    )
+    if resume is None:
+        directory = timestamped_experiment_directory(
+            output_root,
+            components=(profile.profile, "mu-math"),
+            fingerprint=fingerprint,
+            created_at=started_at,
+            claim=True,
+        )
     records_path = directory / "records.jsonl"
     api_path = directory / "api_calls.jsonl"
     errors_path = directory / "errors.jsonl"
     try:
         ensure_experiment_manifest(
             directory / "experiment.json",
-            configuration=configuration,
+            configuration=manifest_configuration,
             fingerprint=fingerprint,
             created_at=started_at,
         )
@@ -709,6 +857,9 @@ def main() -> int:
                             style="dim red",
                             markup=False,
                         )
+                    raise MuMathSampleError(
+                        f"{row_id}: {error['type']}: {error['message']}"
+                    )
                 else:
                     usage = record["judge"]["usage"]
                     latency = record["judge"]["latency_seconds"]
@@ -742,6 +893,13 @@ def main() -> int:
             "on the next identical command.[/yellow]"
         )
         return 130
+    except MuMathSampleError as exc:
+        console.print(
+            "\n[red]µ-MATH stopped at the first failed sample.[/red] "
+            "The failed row was not recorded; rerun the same command after "
+            f"fixing the cause. ({exc})"
+        )
+        return 1
     except Exception as exc:
         fatal_path = output_root / "_fatal_errors.jsonl"
         append_jsonl(

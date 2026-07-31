@@ -22,7 +22,10 @@ cp .env.example .env
 
 ```dotenv
 DASHSCOPE_API_KEY_BEIJING=你的_API_KEY
+DEEPSEEK_API_KEY=你的_API_KEY
 ```
+
+只需填写本次所选 profile 对应的 key。
 
 运行前检查：
 
@@ -45,8 +48,15 @@ MATH_CHECKER_PYTHON="$PWD/.venv-checkers/bin/python" \
 --batch-size all
 ```
 
-相同实验设置再次运行时，脚本根据 `records.jsonl` 跳过已完成样本。已记录为 error
-的样本也视为完成。
+相同实验设置再次运行时，脚本根据 `records.jsonl` 跳过已完成样本。遇到样本
+error 时立即停止，错误诊断写入 `errors.jsonl`，但失败样本不写入
+`records.jsonl`。人工修复后执行相同命令，会从该样本继续。
+
+正式实验按模型、推理参数、method 设置、dataset/split、答案协议、环境、相关数据
+文件及官方 checker 源码判断是否续跑；µ-MATH 还固定 judge profile 和评分协议。
+runner 提交版本仍写入 manifest 留档，但无关代码提交、文档修改、增加其他模型配置
+或数据仓库中无关文件的更新不会切断已有进度。确认页的 `Max new samples` 已扣除每个
+cell 中完成的样本。
 
 ### 并发
 
@@ -236,7 +246,7 @@ judge，不运行论文方法，也不读取正式 U-MATH judge lock。
 
 ```bash
 ./scripts/run_mu_math.sh \
-  --judge qwen35_flash \
+  --judge qwen37_flash \
   --batch-size 10 \
   --concurrency 4 \
   --dry-run
@@ -245,19 +255,19 @@ judge，不运行论文方法，也不读取正式 U-MATH judge lock。
 先运行一条：
 
 ```bash
-./scripts/run_mu_math.sh --judge qwen35_flash --batch-size 1
+./scripts/run_mu_math.sh --judge qwen37_flash --batch-size 1
 ```
 
 分批运行或完成剩余数据：
 
 ```bash
 ./scripts/run_mu_math.sh \
-  --judge qwen35_flash \
+  --judge qwen37_flash \
   --batch-size 100 \
   --concurrency 8
 
 ./scripts/run_mu_math.sh \
-  --judge qwen35_flash \
+  --judge qwen37_flash \
   --batch-size all \
   --concurrency 8
 ```
@@ -282,24 +292,18 @@ judge，不运行论文方法，也不读取正式 U-MATH judge lock。
 
 ### Judge profile
 
-默认文件：`configs/judges/candidates/qwen35_flash.toml`。
+内置候选：
 
-```toml
-profile = "candidate-judge-qwen35-flash-bj"
-provider = "qwen"
-api_type = "openai"
-model = "qwen3.5-flash-2026-02-23"
-base_url = "https://example.com/compatible-mode/v1"
-api_key_env = "DASHSCOPE_API_KEY_BEIJING"
-enable_thinking = false
-temperature = 0.0
-top_p = 1.0
-max_output_tokens = 4096
-seed = 20260729
-request_timeout_seconds = 600
-max_retries = 5
-min_request_interval_seconds = 1.0
-```
+| `--judge` | model | API key 环境变量 |
+| --- | --- | --- |
+| `qwen35_flash`（默认） | `qwen3.5-flash-2026-02-23` | `DASHSCOPE_API_KEY_BEIJING` |
+| `qwen37_flash` | `qwen3.7-flash-2026-07-15` | `DASHSCOPE_API_KEY_BEIJING` |
+| `deepseek_v4_pro` | `deepseek-v4-pro`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
+| `deepseek_v4_flash` | `deepseek-v4-flash`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
+
+Qwen 候选固定 `temperature=0`、`top_p=1`、`seed=20260729`；
+DeepSeek thinking 模式不发送 `temperature`、`top_p` 或 `seed`。所有候选均固定
+`max_output_tokens=4096`。
 
 修改 profile 会创建新实验目录。测试其他 judge 时建议复制为新文件：
 

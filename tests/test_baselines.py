@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from benchmark_core.fairness import FairnessPolicy, FairnessViolation
-from benchmark_core.runner import EvaluationRunner
+from benchmark_core.runner import EvaluationRunner, SampleEvaluationError
 from benchmark_core.schema import Experiment, Generation, Problem
 from benchmark_core.store import ExperimentConflictError, JsonlResultStore
 from benchmark_datasets.base import DatasetContext
@@ -151,21 +151,22 @@ class BaselineTests(unittest.TestCase):
         for method in cases:
             with self.subTest(method=method.name), tempfile.TemporaryDirectory() as directory:
                 store = JsonlResultStore(Path(directory) / "result.jsonl")
-                summary = EvaluationRunner().run(
-                    experiment=Experiment(
-                        f"exp-{method.name}", "tiny", method.name, "model"
-                    ),
-                    plugin=ThreeProblemPlugin(),
-                    context=DatasetContext(Path(directory)),
-                    method=method,
-                    backend=RecordingBackend(),
-                    store=store,
-                    batch_size=1,
-                )
-                self.assertEqual(summary.errors, 1)
+                with self.assertRaises(SampleEvaluationError) as caught:
+                    EvaluationRunner().run(
+                        experiment=Experiment(
+                            f"exp-{method.name}", "tiny", method.name, "model"
+                        ),
+                        plugin=ThreeProblemPlugin(),
+                        context=DatasetContext(Path(directory)),
+                        method=method,
+                        backend=RecordingBackend(),
+                        store=store,
+                        batch_size=1,
+                    )
                 self.assertIn(
-                    "FairnessViolation", list(store.read())[0]["score"]["error"]
+                    "FairnessViolation", caught.exception.record.score.error
                 )
+                self.assertFalse(store.path.exists())
 
     def test_batch_size_advances_through_unfinished_samples(self):
         with tempfile.TemporaryDirectory() as directory:

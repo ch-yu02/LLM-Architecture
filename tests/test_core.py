@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from benchmark_core.concurrency import ordered_parallel_map
-from benchmark_core.runner import EvaluationRunner
+from benchmark_core.runner import EvaluationRunner, SampleEvaluationError
 from benchmark_core.schema import (
     EvaluationRecord,
     Experiment,
@@ -45,6 +45,23 @@ class TinyPlugin:
         from scorers.numeric import NumericAnswerScorer
 
         return NumericAnswerScorer()
+
+
+class TwoProblemPlugin(TinyPlugin):
+    def iter_problems(self, context):
+        yield Problem("tiny", "one", "What is 1+1?", "2")
+        yield Problem("tiny", "two", "What is 1+1?", "2")
+
+
+class FailSecondBackend:
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, messages, *, config):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("second sample failed")
+        return Generation(r"\boxed{2}")
 
 
 class CoreTests(unittest.TestCase):
@@ -111,19 +128,54 @@ class CoreTests(unittest.TestCase):
             record = list(store.read())[0]
             self.assertGreaterEqual(record["timing"]["processing_seconds"], 0)
 
-    def test_runner_records_error_stage_type_and_traceback(self):
+    def test_runner_stops_without_recording_failed_sample(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JsonlResultStore(Path(directory) / "results.jsonl")
-            summary = EvaluationRunner().run(
-                experiment=Experiment("error", "tiny", "direct", "failing"),
-                plugin=TinyPlugin(),
-                context=DatasetContext(Path(directory)),
-                method=get_method("direct"),
-                backend=FailingBackend(),
-                store=store,
-            )
-            self.assertEqual(summary.errors, 1)
-            details = list(store.read())[0]["score"]["details"]
+            diagnostics = []
+            with self.assertRaises(SampleEvaluationError) as caught:
+                EvaluationRunner().run(
+                    experiment=Experiment("error", "tiny", "direct", "failing"),
+                    plugin=TinyPlugin(),
+                    context=DatasetContext(Path(directory)),
+                    method=get_method("direct"),
+                    backend=FailingBackend(),
+                    store=store,
+                    record_callback=diagnostics.append,
+                )
+            self.assertFalse(store.path.exists())
+            self.assertEqual(len(diagnostics), 1)
+            details = caught.exception.record.score.details
             self.assertEqual(details["failure_stage"], "method")
             self.assertEqual(details["exception_type"], "RuntimeError")
-            self.assertNotIn("traceback", details)
+            self.assertIn("traceback", details)
+
+    def test_runner_resumes_from_first_unrecorded_failed_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlResultStore(Path(directory) / "results.jsonl")
+            kwargs = dict(
+                experiment=Experiment("resume-error", "tiny", "direct", "model"),
+                plugin=TwoProblemPlugin(),
+                context=DatasetContext(Path(directory)),
+                method=get_method("direct"),
+                store=store,
+                concurrency=1,
+            )
+            with self.assertRaises(SampleEvaluationError):
+                EvaluationRunner().run(
+                    **kwargs,
+                    backend=FailSecondBackend(),
+                )
+            self.assertEqual(
+                [item["problem"]["id"] for item in store.read()],
+                ["one"],
+            )
+
+            recovered = EvaluationRunner().run(
+                **kwargs,
+                backend=StaticBackend(r"\boxed{2}"),
+            )
+            self.assertEqual((recovered.attempted, recovered.resumed), (1, 1))
+            self.assertEqual(
+                [item["problem"]["id"] for item in store.read()],
+                ["one", "two"],
+            )

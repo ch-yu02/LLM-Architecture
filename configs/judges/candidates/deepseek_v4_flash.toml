@@ -1,0 +1,13 @@
+profile = "candidate-judge-deepseek-v4-flash"
+provider = "deepseek"
+api_type = "openai"
+model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+thinking_type = "enabled"
+reasoning_effort = "high"
+omit_sampling_parameters = true
+max_output_tokens = 4096
+request_timeout_seconds = 600
+max_retries = 5
+min_request_interval_seconds = 1.0

@@ -31,6 +31,14 @@ class RunSummary:
         return self.correct / self.scored if self.scored else None
 
 
+class SampleEvaluationError(RuntimeError):
+    def __init__(self, record: EvaluationRecord):
+        self.record = record
+        super().__init__(
+            f"{record.problem.id}: {record.score.error or 'sample evaluation failed'}"
+        )
+
+
 class EvaluationRunner:
     """Dataset-agnostic orchestration; dataset behavior lives in plugins."""
 
@@ -206,7 +214,9 @@ class EvaluationRunner:
                 scored += 1
                 correct += int(bool(record.score.correct))
             elif record.score.status.value == "error":
-                errors += 1
+                if record_callback is not None:
+                    record_callback(record)
+                raise SampleEvaluationError(record)
             store.append(record)
             if record_callback is not None:
                 record_callback(record)

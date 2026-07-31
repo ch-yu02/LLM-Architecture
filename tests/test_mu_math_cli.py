@@ -7,7 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.run_mu_math import _metrics
+from benchmark_experiments.artifacts import configuration_fingerprint
+from scripts.run_mu_math import (
+    _experiment_identity,
+    _find_resume_experiment,
+    _metrics,
+    _resolve_judge_path,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +27,82 @@ PYTHON = ROOT / ".venv-checkers" / "bin" / "python"
 
 
 class MuMathCliTests(unittest.TestCase):
+    def test_resume_identity_ignores_runner_revision_and_neutral_new_fields(self):
+        old = {
+            "dataset": "mu-math",
+            "dataset_blob": "fixed-data-blob",
+            "judge_profile": {"model": "qwen", "enable_thinking": False},
+            "revisions": {
+                "runner_git": "old",
+                "runner_tree": "old-tree",
+                "data": {"revision": "fixed-data"},
+            },
+        }
+        current = {
+            "dataset": "mu-math",
+            "dataset_blob": "fixed-data-blob",
+            "judge_profile": {
+                "model": "qwen",
+                "enable_thinking": False,
+                "thinking_type": None,
+                "reasoning_effort": None,
+                "omit_sampling_parameters": False,
+            },
+            "revisions": {
+                "runner_git": "new",
+                "runner_tree": "new-tree",
+                "data": {"revision": "fixed-data"},
+            },
+        }
+        identity = _experiment_identity(current)
+        self.assertEqual(_experiment_identity(old), identity)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_root = Path(directory)
+            legacy = output_root / "candidate__mu-math__legacy"
+            legacy.mkdir()
+            legacy_fingerprint = configuration_fingerprint(old)
+            (legacy / "experiment.json").write_text(
+                json.dumps(
+                    {
+                        "fingerprint": legacy_fingerprint,
+                        "configuration": old,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _find_resume_experiment(
+                    output_root,
+                    profile_name="candidate",
+                    identity=identity,
+                    data_root=DATA_ROOT,
+                    dataset_relative_path=Path(
+                        "data/processed/mu_math.jsonl"
+                    ),
+                ),
+                (legacy, legacy_fingerprint, old),
+            )
+
+        changed_data = json.loads(json.dumps(current))
+        changed_data["dataset_blob"] = "other-data-blob"
+        self.assertNotEqual(
+            _experiment_identity(old),
+            _experiment_identity(changed_data),
+        )
+
+    def test_bundled_candidate_profiles_resolve_by_short_name_and_model(self):
+        for value, filename in (
+            ("qwen37_flash", "qwen37_flash.toml"),
+            ("qwen3.7-flash-2026-07-15", "qwen37_flash.toml"),
+            ("deepseek_v4_pro", "deepseek_v4_pro.toml"),
+            ("deepseek-v4-pro", "deepseek_v4_pro.toml"),
+            ("deepseek_v4_flash", "deepseek_v4_flash.toml"),
+            ("deepseek-v4-flash", "deepseek_v4_flash.toml"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(_resolve_judge_path(value).name, filename)
+
     def test_metrics_treat_inconclusive_as_an_error_without_binary_mapping(self):
         records = [
             {
@@ -86,6 +168,8 @@ class OpenAI:
     @staticmethod
     def _create(**kwargs):
         global _active, _max_active
+        if os.environ.get("LOCAL_FORCE_ERROR"):
+            raise ValueError("forced judge failure")
         with _lock:
             _active += 1
             _max_active = max(_max_active, _active)
@@ -220,6 +304,49 @@ class OpenAI:
                 len([path for path in output_root.iterdir() if path.is_dir()]),
                 1,
             )
+
+            failed_output = temporary / "failed-results"
+            failed_command = [
+                *command,
+                "--output-root",
+                str(failed_output),
+            ]
+            failed = subprocess.run(
+                failed_command,
+                cwd=ROOT,
+                env={**environment, "LOCAL_FORCE_ERROR": "1"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 1, failed.stderr or failed.stdout)
+            self.assertIn("stopped at the first failed sample", failed.stdout)
+            failed_directory = next(
+                path for path in failed_output.iterdir() if path.is_dir()
+            )
+            self.assertFalse((failed_directory / "records.jsonl").exists())
+            self.assertEqual(
+                len((failed_directory / "errors.jsonl").read_text().splitlines()),
+                1,
+            )
+
+            recovered = subprocess.run(
+                failed_command,
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                recovered.returncode,
+                0,
+                recovered.stderr or recovered.stdout,
+            )
+            recovered_lines = (
+                failed_directory / "records.jsonl"
+            ).read_text().splitlines()
+            self.assertEqual(len(recovered_lines), 2)
 
             records = [
                 json.loads(line)

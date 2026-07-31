@@ -7,7 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.run_experiments import _dataset_selection
+from scripts.run_experiments import (
+    _dataset_selection,
+    _experiment_identity,
+    _find_resume_experiment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +25,120 @@ PYTHON = ROOT / ".venv-checkers" / "bin" / "python"
 
 
 class ExperimentCliTests(unittest.TestCase):
+    def test_resume_identity_ignores_runner_revision_and_prefers_superset(self):
+        old = {
+            "model": {"model": "qwen", "enable_thinking": False},
+            "method": "direct",
+            "dataset": "harp-small",
+            "dataset_artifacts": {"data.jsonl": "same-blob"},
+            "revisions": {
+                "runner_git": "old",
+                "runner_tree": "old-tree",
+                "data": {"revision": "old-data-commit"},
+                "method_source": None,
+            },
+        }
+        current = {
+            **old,
+            "model": {
+                **old["model"],
+                "thinking_type": None,
+                "reasoning_effort": None,
+                "omit_sampling_parameters": False,
+            },
+            "revisions": {
+                **old["revisions"],
+                "runner_git": "new",
+                "runner_tree": "new-tree",
+            },
+        }
+        artifacts = {"data.jsonl": "same-blob"}
+        identity = _experiment_identity(
+            current,
+            dataset_artifacts=artifacts,
+        )
+        self.assertEqual(
+            _experiment_identity(old, dataset_artifacts=artifacts),
+            identity,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_root = Path(directory)
+
+            def create_result(name, fingerprint, problem_ids):
+                result = output_root / name
+                result.mkdir()
+                (result / "experiment.json").write_text(
+                    json.dumps(
+                        {
+                            "fingerprint": fingerprint,
+                            "configuration": old,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                records = [
+                    {
+                        "record_type": "experiment",
+                        "format_version": 2,
+                    },
+                    *(
+                        {
+                            "record_type": "sample",
+                            "problem": {"id": problem_id},
+                        }
+                        for problem_id in problem_ids
+                    ),
+                ]
+                (result / "records.jsonl").write_text(
+                    "\n".join(json.dumps(item) for item in records) + "\n",
+                    encoding="utf-8",
+                )
+                return result
+
+            complete = create_result(
+                "local__direct__harp-small__r001__old",
+                "a" * 64,
+                ("p1", "p2", "p3"),
+            )
+            create_result(
+                "local__direct__harp-small__r001__new",
+                "b" * 64,
+                ("p1",),
+            )
+            self.assertEqual(
+                _find_resume_experiment(
+                    output_root,
+                    components=(
+                        "local",
+                        "direct",
+                        "harp-small",
+                        "r001",
+                    ),
+                    identity=identity,
+                    data_root=DATA_ROOT,
+                    dataset_paths=(),
+                ),
+                (complete, "a" * 64, old),
+            )
+
+        changed_model = json.loads(json.dumps(current))
+        changed_model["model"]["model"] = "another-model"
+        self.assertNotEqual(
+            identity,
+            _experiment_identity(
+                changed_model,
+                dataset_artifacts=artifacts,
+            ),
+        )
+        self.assertNotEqual(
+            identity,
+            _experiment_identity(
+                current,
+                dataset_artifacts={"data.jsonl": "changed-blob"},
+            ),
+        )
+
     def test_dataset_selection_keeps_harp_small_explicit(self):
         self.assertEqual(
             _dataset_selection("all"),
@@ -509,9 +627,11 @@ class OpenAI:
             )
             self.assertEqual(error_run.returncode, 1)
             self.assertIn("ERROR direct × gsm1k", error_run.stdout)
+            self.assertIn("stopped at the first failed sample", error_run.stdout)
             error_directory = next(
                 path for path in error_output.iterdir() if path.is_dir()
             )
+            self.assertFalse((error_directory / "records.jsonl").exists())
             diagnostics = [
                 json.loads(line)
                 for line in (error_directory / "errors.jsonl")

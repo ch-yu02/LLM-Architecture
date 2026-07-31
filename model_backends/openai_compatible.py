@@ -27,6 +27,9 @@ class ModelProfile:
     base_url: str
     api_key_env: str
     enable_thinking: bool | None = None
+    thinking_type: str | None = None
+    reasoning_effort: str | None = None
+    omit_sampling_parameters: bool = False
     temperature: float | None = 0.0
     top_p: float | None = 1.0
     max_output_tokens: int | None = 8192
@@ -36,7 +39,13 @@ class ModelProfile:
     min_request_interval_seconds: float = 1.0
 
     def public_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        public = asdict(self)
+        for key in ("thinking_type", "reasoning_effort"):
+            if public[key] is None:
+                public.pop(key)
+        if not public["omit_sampling_parameters"]:
+            public.pop("omit_sampling_parameters")
+        return public
 
     def inference_defaults(self) -> dict[str, Any]:
         values = {
@@ -45,6 +54,9 @@ class ModelProfile:
             "max_output_tokens": self.max_output_tokens,
             "seed": self.seed,
         }
+        if self.omit_sampling_parameters:
+            values["temperature"] = None
+            values["top_p"] = None
         return {key: value for key, value in values.items() if value is not None}
 
 
@@ -66,6 +78,22 @@ def load_model_profile(path: Path) -> ModelProfile:
     if profile.min_request_interval_seconds < 0:
         raise ModelConfigurationError(
             "min_request_interval_seconds must be non-negative"
+        )
+    if profile.enable_thinking is not None and profile.thinking_type is not None:
+        raise ModelConfigurationError(
+            "enable_thinking and thinking_type cannot be used together"
+        )
+    if profile.thinking_type not in {None, "enabled", "disabled"}:
+        raise ModelConfigurationError(
+            "thinking_type must be 'enabled' or 'disabled'"
+        )
+    if profile.reasoning_effort not in {None, "low", "medium", "high", "max"}:
+        raise ModelConfigurationError(
+            "reasoning_effort must be low, medium, high, or max"
+        )
+    if not isinstance(profile.omit_sampling_parameters, bool):
+        raise ModelConfigurationError(
+            "omit_sampling_parameters must be a boolean"
         )
     validate_inference_config(profile.inference_defaults())
     return profile
@@ -228,6 +256,12 @@ class OpenAICompatibleBackend:
             options["extra_body"] = {
                 "enable_thinking": self.profile.enable_thinking
             }
+        elif self.profile.thinking_type is not None:
+            options["extra_body"] = {
+                "thinking": {"type": self.profile.thinking_type}
+            }
+        if self.profile.reasoning_effort is not None:
+            options["reasoning_effort"] = self.profile.reasoning_effort
         return options
 
     def generate(

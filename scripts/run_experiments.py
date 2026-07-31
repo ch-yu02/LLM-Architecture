@@ -5,6 +5,7 @@ import argparse
 import copy
 import json
 import os
+import subprocess
 import sys
 import time
 import tomllib
@@ -23,7 +24,10 @@ from benchmark_core.fairness import (  # noqa: E402
     FairnessViolation,
     evaluation_control_metadata,
 )
-from benchmark_core.runner import EvaluationRunner  # noqa: E402
+from benchmark_core.runner import (  # noqa: E402
+    EvaluationRunner,
+    SampleEvaluationError,
+)
 from benchmark_core.schema import Experiment  # noqa: E402
 from benchmark_core.store import JsonlResultStore  # noqa: E402
 from benchmark_datasets import get_dataset  # noqa: E402
@@ -89,6 +93,211 @@ def _dataset_selection(value: str) -> list[str]:
     if value.strip().lower() == "all":
         return list(PRIMARY_DATASETS)
     return _csv_selection(value, SELECTABLE_DATASETS, "datasets")
+
+
+def _normalize_profile_metadata(profile: dict[str, Any]) -> None:
+    if profile.get("thinking_type") is None:
+        profile.pop("thinking_type", None)
+    if profile.get("reasoning_effort") is None:
+        profile.pop("reasoning_effort", None)
+    if profile.get("omit_sampling_parameters") is False:
+        profile.pop("omit_sampling_parameters", None)
+
+
+def _experiment_identity(
+    configuration: dict[str, Any],
+    *,
+    dataset_artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    identity = copy.deepcopy(configuration)
+    revisions = identity.get("revisions")
+    if isinstance(revisions, dict):
+        revisions.pop("runner_git", None)
+        revisions.pop("runner_tree", None)
+        if dataset_artifacts is not None:
+            revisions.pop("data", None)
+        if not revisions:
+            identity.pop("revisions")
+    if dataset_artifacts is not None:
+        identity["dataset_artifacts"] = dataset_artifacts
+    model = identity.get("model")
+    if isinstance(model, dict):
+        _normalize_profile_metadata(model)
+    judge = identity.get("judge")
+    if isinstance(judge, dict):
+        judge_profile = judge.get("profile")
+        if isinstance(judge_profile, dict):
+            _normalize_profile_metadata(judge_profile)
+    return identity
+
+
+def _dataset_revision_paths(plugin) -> tuple[Path, ...]:
+    filename = getattr(plugin, "filename", None)
+    if not isinstance(filename, str) or not filename:
+        return ()
+    paths = [Path("data") / "processed" / filename]
+    paths.extend(
+        Path(path) for path in getattr(plugin, "revision_paths", ())
+    )
+    return tuple(paths)
+
+
+def _git_object_ids(
+    data_root: Path,
+    *,
+    revision: str,
+    paths: tuple[Path, ...],
+) -> dict[str, str]:
+    if not paths:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(data_root),
+                "rev-parse",
+                f"{revision}^{{tree}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        object_id = result.stdout.strip()
+        if result.returncode != 0 or not object_id:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise ExperimentArtifactError(
+                f"Cannot resolve dataset repository tree {revision}: {detail}"
+            )
+        return {"__repository_tree__": object_id}
+    objects: dict[str, str] = {}
+    for path in paths:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(data_root),
+                "rev-parse",
+                f"{revision}:{path.as_posix()}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        object_id = result.stdout.strip()
+        if result.returncode != 0 or not object_id:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise ExperimentArtifactError(
+                f"Cannot resolve dataset artifact {revision}:{path}: {detail}"
+            )
+        objects[path.as_posix()] = object_id
+    return objects
+
+
+def _result_problem_ids(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    completed: set[str] = set()
+    header_seen = False
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+                if item.get("record_type") == "experiment":
+                    if header_seen or completed:
+                        raise ValueError("duplicate or misplaced header")
+                    header_seen = True
+                elif item.get("record_type") == "sample" and header_seen:
+                    problem_id = str(item["problem"]["id"])
+                    if problem_id in completed:
+                        raise ValueError(f"duplicate problem ID {problem_id}")
+                    completed.add(problem_id)
+                else:
+                    raise ValueError("invalid record order or type")
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                raise ExperimentArtifactError(
+                    f"Invalid result at {path}:{line_number}: {exc}"
+                ) from exc
+    return completed
+
+
+def _find_resume_experiment(
+    output_root: Path,
+    *,
+    components: tuple[str, ...],
+    identity: dict[str, Any],
+    data_root: Path,
+    dataset_paths: tuple[Path, ...],
+) -> tuple[Path, str, dict[str, Any]] | None:
+    if not output_root.is_dir():
+        return None
+    prefix = "__".join(safe_slug(component) for component in components) + "__"
+    matches: list[tuple[Path, str, dict[str, Any], set[str]]] = []
+    for directory in sorted(output_root.iterdir()):
+        if not directory.is_dir() or not directory.name.startswith(prefix):
+            continue
+        manifest_path = directory / "experiment.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            fingerprint = manifest["fingerprint"]
+            stored_configuration = manifest["configuration"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ExperimentArtifactError(
+                f"Invalid experiment manifest: {manifest_path}"
+            ) from exc
+        if not isinstance(fingerprint, str) or not isinstance(
+            stored_configuration, dict
+        ):
+            raise ExperimentArtifactError(
+                f"Invalid experiment manifest: {manifest_path}"
+            )
+        stored_artifacts = stored_configuration.get("dataset_artifacts")
+        if not isinstance(stored_artifacts, dict):
+            try:
+                stored_revision = stored_configuration["revisions"]["data"][
+                    "revision"
+                ]
+            except (KeyError, TypeError) as exc:
+                raise ExperimentArtifactError(
+                    f"Manifest does not identify its dataset: {manifest_path}"
+                ) from exc
+            stored_artifacts = _git_object_ids(
+                data_root,
+                revision=str(stored_revision),
+                paths=dataset_paths,
+            )
+        if (
+            _experiment_identity(
+                stored_configuration,
+                dataset_artifacts=stored_artifacts,
+            )
+            == identity
+        ):
+            matches.append(
+                (
+                    directory,
+                    fingerprint,
+                    stored_configuration,
+                    _result_problem_ids(directory / "records.jsonl"),
+                )
+            )
+    if not matches:
+        return None
+    matches.sort(key=lambda item: len(item[3]), reverse=True)
+    best = matches[0]
+    if any(not item[3].issubset(best[3]) for item in matches[1:]):
+        raise ExperimentArtifactError(
+            "Multiple matching experiment directories contain divergent "
+            f"sample sets: {', '.join(str(item[0]) for item in matches)}"
+        )
+    if len(matches) > 1 and len(matches[1][3]) == len(best[3]):
+        raise ExperimentArtifactError(
+            "Multiple matching experiment directories have equal progress: "
+            f"{', '.join(str(item[0]) for item in matches)}"
+        )
+    return best[0], best[1], best[2]
 
 
 def _parse_value(value: str) -> Any:
@@ -527,11 +736,24 @@ def main() -> int:
         return 2
 
     try:
-        data_state = clean_git_repository_state(args.data_root.resolve())
+        data_root = args.data_root.resolve()
+        data_state = clean_git_repository_state(data_root)
         method_source_states = {}
         for name in methods:
             config_path = ROOT / "configs" / "methods" / f"{name}.toml"
             method_source_states[name] = _source_state(config_path)
+        dataset_paths = {
+            name: _dataset_revision_paths(get_dataset(name))
+            for name in datasets
+        }
+        dataset_artifacts = {
+            name: _git_object_ids(
+                data_root,
+                revision=data_state["revision"],
+                paths=dataset_paths[name],
+            )
+            for name in datasets
+        }
     except ExperimentArtifactError as exc:
         _report_error(
             console,
@@ -584,32 +806,122 @@ def main() -> int:
         )
         return 2
 
+    runner_tree = tree_fingerprint(ROOT)
+    runner_git = git_revision(ROOT)
+    output_root = args.output_root.resolve()
     cell_count = len(methods) * len(datasets) * args.repeats
-    planned_dataset_counts = {
-        name: (
-            total
-            if args.batch_size is None
-            else min(total, args.batch_size)
-        )
-        for name, total in dataset_totals.items()
-    }
-    sample_count = (
-        sum(planned_dataset_counts.values()) * len(methods) * args.repeats
-    )
+    cell_plans: dict[tuple[int, str, str], dict[str, Any]] = {}
+    sample_count = 0
     minimum_calls = 0
     maximum_calls = 0
-    for method_name in methods:
-        policy = method_settings[method_name][3]
-        method_samples = sum(planned_dataset_counts.values()) * args.repeats
-        minimum_calls += policy.min_model_calls_per_problem * method_samples
-        maximum_calls += policy.max_model_calls_per_problem * method_samples
-    u_math_samples = (
-        planned_dataset_counts.get("u-math-text-only", 0)
-        * len(methods)
-        * args.repeats
-    )
-    minimum_calls += u_math_samples
-    maximum_calls += u_math_samples
+    try:
+        for repeat_index in range(1, args.repeats + 1):
+            repeat_inference = repeat_inferences[repeat_index]
+            for method_name in methods:
+                _, _, method_config, policy = method_settings[method_name]
+                method_source_state = method_source_states[method_name]
+                for dataset_name in datasets:
+                    plugin = get_dataset(dataset_name)
+                    public_judge = (
+                        {
+                            **judge_protocol_metadata(),
+                            "profile": judge_profile.public_dict(),
+                            "model": judge_profile.model,
+                            "inference_config": (
+                                judge_profile.inference_defaults()
+                            ),
+                        }
+                        if dataset_name == "u-math-text-only"
+                        else None
+                    )
+                    configuration = {
+                        "model": profile.public_dict(),
+                        "inference_config": repeat_inference,
+                        "repeat_seed": {
+                            "mode": args.seed_mode,
+                            "base_seed": inference.get("seed"),
+                            "effective_seed": repeat_inference.get("seed"),
+                        },
+                        "method": method_name,
+                        "method_config": method_config,
+                        "fairness_policy": policy.to_dict(),
+                        "dataset": dataset_name,
+                        "dataset_scope": getattr(
+                            plugin, "evaluation_scope", "test"
+                        ),
+                        "dataset_artifacts": dataset_artifacts[dataset_name],
+                        "dataset_answer_instruction": getattr(
+                            plugin, "answer_instruction", ""
+                        ),
+                        "repeat": repeat_index,
+                        "run_tag": args.run_tag,
+                        "judge": public_judge,
+                        "environment": environment_state,
+                        "revisions": {
+                            "runner_git": runner_git,
+                            "runner_tree": runner_tree,
+                            "data": data_state,
+                            "method_source": method_source_state,
+                        },
+                    }
+                    identity = _experiment_identity(
+                        configuration,
+                        dataset_artifacts=dataset_artifacts[dataset_name],
+                    )
+                    components = (
+                        profile.profile,
+                        method_name,
+                        dataset_name,
+                        f"r{repeat_index:03d}",
+                    )
+                    if args.run_tag.strip():
+                        components = (*components, args.run_tag)
+                    resume = _find_resume_experiment(
+                        output_root,
+                        components=components,
+                        identity=identity,
+                        data_root=data_root,
+                        dataset_paths=dataset_paths[dataset_name],
+                    )
+                    completed_count = (
+                        len(_result_problem_ids(resume[0] / "records.jsonl"))
+                        if resume is not None
+                        else 0
+                    )
+                    remaining = max(
+                        0,
+                        dataset_totals[dataset_name] - completed_count,
+                    )
+                    target = (
+                        remaining
+                        if args.batch_size is None
+                        else min(args.batch_size, remaining)
+                    )
+                    key = (repeat_index, method_name, dataset_name)
+                    cell_plans[key] = {
+                        "configuration": configuration,
+                        "identity": identity,
+                        "stable_fingerprint": configuration_fingerprint(
+                            identity
+                        ),
+                        "components": components,
+                        "resume": resume,
+                        "public_judge": public_judge,
+                    }
+                    sample_count += target
+                    minimum_calls += policy.min_model_calls_per_problem * target
+                    maximum_calls += policy.max_model_calls_per_problem * target
+                    if dataset_name == "u-math-text-only":
+                        minimum_calls += target
+                        maximum_calls += target
+    except ExperimentArtifactError as exc:
+        _report_error(
+            console,
+            "Resume validation failed",
+            exc,
+            debug=args.debug,
+        )
+        return 2
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="cyan", justify="right")
@@ -722,9 +1034,6 @@ def main() -> int:
         _report_error(console, "API preflight failed", exc, debug=args.debug)
         return 2
 
-    runner_tree = tree_fingerprint(ROOT)
-    runner_git = git_revision(ROOT)
-    output_root = args.output_root.resolve()
     overall_failed = 0
     matrix_started = time.perf_counter()
     result_rows: list[dict[str, Any]] = []
@@ -754,67 +1063,48 @@ def main() -> int:
                     method, _, method_config, policy = method_settings[
                         method_name
                     ]
-                    method_source_state = method_source_states[method_name]
                     for dataset_name in datasets:
                         plugin = get_dataset(dataset_name)
                         dataset_total = dataset_totals[dataset_name]
-                        public_judge = (
-                            {
-                                **judge_protocol_metadata(),
-                                "profile": judge_profile.public_dict(),
-                                "model": judge_profile.model,
-                                "inference_config": (
-                                    judge_profile.inference_defaults()
-                                ),
-                            }
-                            if dataset_name == "u-math-text-only"
-                            else None
-                        )
-                        configuration = {
-                            "model": profile.public_dict(),
-                            "inference_config": repeat_inference,
-                            "repeat_seed": {
-                                "mode": args.seed_mode,
-                                "base_seed": inference.get("seed"),
-                                "effective_seed": repeat_inference.get("seed"),
-                            },
-                            "method": method_name,
-                            "method_config": method_config,
-                            "fairness_policy": policy.to_dict(),
-                            "dataset": dataset_name,
-                            "dataset_scope": getattr(
-                                plugin, "evaluation_scope", "test"
-                            ),
-                            "dataset_answer_instruction": getattr(
-                                plugin, "answer_instruction", ""
-                            ),
-                            "repeat": repeat_index,
-                            "run_tag": args.run_tag,
-                            "judge": public_judge,
-                            "environment": environment_state,
-                            "revisions": {
-                                "runner_git": runner_git,
-                                "runner_tree": runner_tree,
-                                "data": data_state,
-                                "method_source": method_source_state,
-                            },
-                        }
-                        fingerprint = configuration_fingerprint(configuration)
+                        plan = cell_plans[
+                            (repeat_index, method_name, dataset_name)
+                        ]
+                        configuration = plan["configuration"]
+                        identity = plan["identity"]
+                        stable_fingerprint = plan["stable_fingerprint"]
+                        public_judge = plan["public_judge"]
                         started_at = datetime.now(timezone.utc).isoformat()
-                        directory = experiment_directory(
+                        components = plan["components"]
+                        resume = _find_resume_experiment(
                             output_root,
-                            model=profile.profile,
-                            method=method_name,
-                            dataset=dataset_name,
-                            repeat=repeat_index,
-                            fingerprint=fingerprint,
-                            created_at=started_at,
-                            run_tag=args.run_tag,
-                            claim=True,
+                            components=components,
+                            identity=identity,
+                            data_root=data_root,
+                            dataset_paths=dataset_paths[dataset_name],
                         )
+                        if resume is None:
+                            fingerprint = stable_fingerprint
+                            manifest_configuration = configuration
+                            directory = experiment_directory(
+                                output_root,
+                                model=profile.profile,
+                                method=method_name,
+                                dataset=dataset_name,
+                                repeat=repeat_index,
+                                fingerprint=fingerprint,
+                                created_at=started_at,
+                                run_tag=args.run_tag,
+                                claim=True,
+                            )
+                        else:
+                            (
+                                directory,
+                                fingerprint,
+                                manifest_configuration,
+                            ) = resume
                         ensure_experiment_manifest(
                             directory / "experiment.json",
-                            configuration=configuration,
+                            configuration=manifest_configuration,
                             fingerprint=fingerprint,
                             created_at=started_at,
                         )
@@ -848,12 +1138,12 @@ def main() -> int:
                             dataset=dataset_name,
                             method=method_name,
                             model=profile.model,
-                            revisions=configuration["revisions"],
+                            revisions=manifest_configuration["revisions"],
                             metadata={
                                 "fingerprint": fingerprint,
                                 "repeat": repeat_index,
                                 "run_tag": args.run_tag,
-                                "judge": public_judge,
+                                "judge": manifest_configuration["judge"],
                                 "evaluation_control": (
                                     evaluation_control_metadata(
                                         repeat_inference,
@@ -1020,6 +1310,13 @@ def main() -> int:
             "on the next identical command.[/yellow]"
         )
         return 130
+    except SampleEvaluationError as exc:
+        console.print(
+            "\n[red]Experiment stopped at the first failed sample.[/red] "
+            f"No result was recorded for {exc.record.problem.id}; rerun the "
+            "same command after fixing the cause."
+        )
+        return 1
     except Exception as exc:
         fatal_path = output_root / "_fatal_errors.jsonl"
         append_jsonl(

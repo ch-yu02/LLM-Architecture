@@ -218,25 +218,52 @@ class ExperimentArtifactTests(unittest.TestCase):
         self.assertEqual(profile.model, "qwen3.5-flash-2026-02-23")
         self.assertEqual(profile.api_key_env, "DASHSCOPE_API_KEY_BEIJING")
         self.assertNotIn("api_key", public)
+        self.assertNotIn("thinking_type", public)
+        self.assertNotIn("reasoning_effort", public)
+        self.assertNotIn("omit_sampling_parameters", public)
 
-    def test_u_math_candidate_profile_has_reproducible_settings(self):
-        profile = load_model_profile(
-            ROOT
-            / "configs"
-            / "judges"
-            / "candidates"
-            / "qwen35_flash.toml"
-        )
-        self.assertEqual(profile.model, "qwen3.5-flash-2026-02-23")
-        self.assertEqual(
-            profile.inference_defaults(),
-            {
-                "temperature": 0.0,
-                "top_p": 1.0,
-                "max_output_tokens": 4096,
-                "seed": 20260729,
-            },
-        )
+    def test_u_math_candidate_profiles_have_fixed_settings(self):
+        candidate_dir = ROOT / "configs" / "judges" / "candidates"
+        expected = {
+            "qwen35_flash.toml": (
+                "qwen3.5-flash-2026-02-23",
+                {
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "max_output_tokens": 4096,
+                    "seed": 20260729,
+                },
+            ),
+            "qwen37_flash.toml": (
+                "qwen3.7-flash-2026-07-15",
+                {
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "max_output_tokens": 4096,
+                    "seed": 20260729,
+                },
+            ),
+            "deepseek_v4_pro.toml": (
+                "deepseek-v4-pro",
+                {"max_output_tokens": 4096},
+            ),
+            "deepseek_v4_flash.toml": (
+                "deepseek-v4-flash",
+                {"max_output_tokens": 4096},
+            ),
+        }
+        for filename, (model, inference) in expected.items():
+            with self.subTest(filename=filename):
+                profile = load_model_profile(candidate_dir / filename)
+                self.assertEqual(profile.model, model)
+                self.assertEqual(profile.inference_defaults(), inference)
+
+        for filename in ("deepseek_v4_pro.toml", "deepseek_v4_flash.toml"):
+            with self.subTest(filename=filename):
+                deepseek = load_model_profile(candidate_dir / filename)
+                self.assertEqual(deepseek.thinking_type, "enabled")
+                self.assertEqual(deepseek.reasoning_effort, "high")
+                self.assertTrue(deepseek.omit_sampling_parameters)
 
     def test_u_math_formal_runs_are_blocked_until_judge_is_locked(self):
         with self.assertRaisesRegex(
@@ -376,6 +403,26 @@ class ExperimentArtifactTests(unittest.TestCase):
             )
         self.assertEqual(requests[0]["seed"], 1234)
         self.assertEqual(telemetry["seed"], 1234)
+
+    def test_backend_maps_deepseek_thinking_options(self):
+        profile = load_model_profile(
+            ROOT
+            / "configs"
+            / "judges"
+            / "candidates"
+            / "deepseek_v4_pro.toml"
+        )
+        backend = object.__new__(OpenAICompatibleBackend)
+        backend.profile = profile
+        options = backend._request_options(profile.inference_defaults())
+        self.assertEqual(
+            options,
+            {
+                "max_tokens": 4096,
+                "extra_body": {"thinking": {"type": "enabled"}},
+                "reasoning_effort": "high",
+            },
+        )
 
     def test_api_error_telemetry_records_message_and_redacts_key(self):
         class FailingCompletions:

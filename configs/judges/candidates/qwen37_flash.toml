@@ -1,0 +1,14 @@
+profile = "candidate-judge-qwen37-flash-bj"
+provider = "qwen"
+api_type = "openai"
+model = "qwen3.7-flash-2026-07-15"
+base_url = "https://llm-622gx73vher1zi0s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY_BEIJING"
+enable_thinking = false
+temperature = 0.0
+top_p = 1.0
+max_output_tokens = 4096
+seed = 20260729
+request_timeout_seconds = 600
+max_retries = 5
+min_request_interval_seconds = 1.0
