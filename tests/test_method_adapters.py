@@ -49,6 +49,12 @@ class OneProblemPlugin:
         return NumericAnswerScorer()
 
 
+class TwoProblemPlugin(OneProblemPlugin):
+    def iter_problems(self, context):
+        yield Problem("tiny", "one", "What is 1+1?", "2")
+        yield Problem("tiny", "two", "What is 1+2?", "3")
+
+
 class MethodAdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -90,6 +96,35 @@ class MethodAdapterTests(unittest.TestCase):
         )
         self.assertEqual(result.value, "2")
 
+    def test_restricted_executor_supports_pal_math_dependencies(self):
+        result = RestrictedPythonExecutor().execute(
+            "import numpy as np\n"
+            "from scipy.optimize import minimize_scalar\n"
+            "from sympy import symbols, solve\n"
+            "def solution():\n"
+            "    _, expected = (0, 4)\n"
+            "    assert hasattr(np, 'array')\n"
+            "    x = symbols('x')\n"
+            "    symbolic = int(solve(x - expected, x)[0])\n"
+            "    optimized = round(minimize_scalar(\n"
+            "        lambda value: (value - expected) ** 2\n"
+            "    ).x)\n"
+            "    return int(np.array([symbolic, optimized]).mean())"
+        )
+        self.assertEqual(result.value, 4)
+
+    def test_restricted_executor_environment_preflight(self):
+        RestrictedPythonExecutor().validate_environment()
+
+    def test_restricted_executor_isolates_generated_stdout(self):
+        result = RestrictedPythonExecutor().execute(
+            "print('top level output')\n"
+            "def solution():\n"
+            "    print('solution output')\n"
+            "    return 2"
+        )
+        self.assertEqual(result.value, 2)
+
     def test_final_answer_envelope_does_not_double_wrap(self):
         self.assertEqual(
             format_final_answer(r"Answer: \boxed{\frac{1}{2}}"),
@@ -105,6 +140,7 @@ class MethodAdapterTests(unittest.TestCase):
         for code in (
             "import os\ndef solution():\n    return 1",
             "def solution():\n    return (1).__class__",
+            "import sys\ndef solution():\n    return sys.modules",
         ):
             with self.subTest(code=code), self.assertRaises(ProgramExecutionError):
                 executor.execute(code)
@@ -124,6 +160,65 @@ class MethodAdapterTests(unittest.TestCase):
         self.assertEqual(record["generation"]["finish_reason"], "stop")
         self.assertIn("three examples", backend.calls[0]["messages"][1]["content"])
         self.assertEqual(record["generation"]["model_calls"], 1)
+
+    def test_pal_invalid_generated_program_is_scored_incorrect(self):
+        backend = QueueBackend(
+            ["```python\ndef solution():\n    return missing_name\n```"]
+        )
+        summary, record = self.run_method(PALAdapter(self.pal_source), backend)
+
+        self.assertEqual((summary.scored, summary.correct), (1, 0))
+        self.assertEqual(record["generation"]["text"], "")
+        self.assertEqual(record["generation"]["model_calls"], 1)
+        self.assertEqual(record["generation"]["usage"]["input_tokens"], 10)
+        self.assertEqual(record["score"]["status"], "scored")
+        self.assertFalse(record["score"]["correct"])
+        details = record["generation"]["method_details"]
+        self.assertIn("return missing_name", details["generated_program"])
+        self.assertEqual(details["execution"]["status"], "error")
+        self.assertIn("missing_name", details["execution"]["error"])
+
+    def test_pal_resume_uses_current_executor_for_new_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlResultStore(Path(directory) / "results.jsonl")
+            experiment = Experiment(
+                "exp-pal-resume", "tiny", "pal", "fake-model"
+            )
+            context = DatasetContext(Path(directory))
+            legacy_executor = RestrictedPythonExecutor()
+            legacy_executor.protocol = "legacy-pal-python"
+            first = EvaluationRunner().run(
+                experiment=experiment,
+                plugin=TwoProblemPlugin(),
+                context=context,
+                method=PALAdapter(
+                    self.pal_source, executor=legacy_executor
+                ),
+                backend=QueueBackend(
+                    ["```python\ndef solution():\n    return 2\n```"]
+                ),
+                store=store,
+                batch_size=1,
+            )
+            second = EvaluationRunner().run(
+                experiment=experiment,
+                plugin=TwoProblemPlugin(),
+                context=context,
+                method=PALAdapter(self.pal_source),
+                backend=QueueBackend(
+                    ["```python\ndef solution():\n    return 3\n```"]
+                ),
+                store=store,
+                batch_size=1,
+            )
+            records = list(store.read())
+
+        self.assertEqual((first.scored, second.resumed, second.scored), (1, 1, 1))
+        protocols = [
+            record["generation"]["method_details"]["execution"]["protocol"]
+            for record in records
+        ]
+        self.assertEqual(protocols, ["legacy-pal-python", "pal-python-v4"])
 
     def test_self_refine_end_to_end_and_usage_aggregation(self):
         backend = QueueBackend(

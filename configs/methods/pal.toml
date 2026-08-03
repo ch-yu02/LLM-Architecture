@@ -17,5 +17,19 @@ allowed_inference_overrides = []
 
 [security]
 executor = "executors.RestrictedPythonExecutor"
-allowed_imports = ["decimal", "fractions", "math"]
+protocol = "pal-python-v4"
+allowed_imports = [
+  "cmath",
+  "collections",
+  "decimal",
+  "fractions",
+  "functools",
+  "itertools",
+  "math",
+  "numpy",
+  "scipy",
+  "statistics",
+  "sympy",
+  "sys",
+]
 network_available = false

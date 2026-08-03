@@ -7,7 +7,7 @@ from typing import Any
 
 from benchmark_core.interfaces import ModelBackend
 from benchmark_core.schema import Generation, Problem
-from executors import RestrictedPythonExecutor
+from executors import ProgramExecutionError, RestrictedPythonExecutor
 
 from .base import MethodAdapter
 
@@ -67,6 +67,7 @@ class PALAdapter(MethodAdapter):
     ) -> None:
         super().__init__(source_path)
         self.executor = executor or RestrictedPythonExecutor()
+        self.executor.validate_environment()
         self.validate_source()
         prompt_module = runpy.run_path(
             str(self.source_path / "pal" / "prompt" / "math_prompts.py")
@@ -96,7 +97,27 @@ class PALAdapter(MethodAdapter):
             config={},
         )
         code = extract_python_code(response.text)
-        executed = self.executor.execute(code)
+        try:
+            executed = self.executor.execute(code)
+        except ProgramExecutionError as exc:
+            # An invalid generated program is a method outcome, not an
+            # infrastructure failure. Submit no answer so the dataset scorer
+            # records this sample as incorrect while retaining diagnostics.
+            return replace(
+                response,
+                text="",
+                metadata={
+                    **response.metadata,
+                    "method": "pal",
+                    "generated_program": code,
+                    "execution": {
+                        "backend": "restricted_python",
+                        "protocol": self.executor.protocol,
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                },
+            )
         return replace(
             response,
             text=format_final_answer(executed.value),
@@ -107,6 +128,8 @@ class PALAdapter(MethodAdapter):
                 "generated_program": code,
                 "execution": {
                     "backend": "restricted_python",
+                    "protocol": self.executor.protocol,
+                    "status": "success",
                     "value_type": executed.value_type,
                 },
             },

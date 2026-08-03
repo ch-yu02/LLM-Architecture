@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
 import math
 import resource
 import sys
+from contextlib import redirect_stdout
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any
@@ -19,31 +21,60 @@ _DENIED_NODES = (
     ast.ClassDef,
     ast.Delete,
     ast.Global,
-    ast.Lambda,
     ast.Nonlocal,
-    ast.Raise,
-    ast.Try,
     ast.With,
     ast.Yield,
     ast.YieldFrom,
 )
-_ALLOWED_MODULES = {"decimal", "fractions", "math"}
+_ALLOWED_MODULES = {
+    "cmath",
+    "collections",
+    "decimal",
+    "fractions",
+    "functools",
+    "itertools",
+    "math",
+    "numpy",
+    "scipy",
+    "statistics",
+    "sympy",
+    "sys",
+}
+
+
+def _module_is_allowed(name: str) -> bool:
+    return name.split(".", 1)[0] in _ALLOWED_MODULES
 
 
 def _validate(tree: ast.AST) -> None:
     for node in ast.walk(tree):
         if isinstance(node, _DENIED_NODES):
             raise ValueError(f"syntax is not allowed: {type(node).__name__}")
-        if isinstance(node, ast.Name) and node.id.startswith("_"):
+        if (
+            isinstance(node, ast.Name)
+            and node.id.startswith("_")
+            and node.id not in {"_", "__name__"}
+        ):
             raise ValueError(f"private name is not allowed: {node.id}")
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             raise ValueError(f"private attribute is not allowed: {node.attr}")
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+            and node.attr != "setrecursionlimit"
+        ):
+            raise ValueError(f"sys attribute is not allowed: {node.attr}")
         if isinstance(node, ast.Import):
-            if any(alias.name not in _ALLOWED_MODULES for alias in node.names):
-                raise ValueError("only decimal, fractions, and math imports are allowed")
+            if any(not _module_is_allowed(alias.name) for alias in node.names):
+                raise ValueError("module is not allowed")
         if isinstance(node, ast.ImportFrom):
-            if node.level or node.module not in _ALLOWED_MODULES:
-                raise ValueError("only decimal, fractions, and math imports are allowed")
+            if node.level or not node.module or not _module_is_allowed(node.module):
+                raise ValueError("module is not allowed")
+            if node.module == "sys" and any(
+                alias.name != "setrecursionlimit" for alias in node.names
+            ):
+                raise ValueError("only sys.setrecursionlimit is allowed")
             if any(
                 alias.name == "*" or alias.name.startswith("_")
                 for alias in node.names
@@ -69,9 +100,15 @@ def _safe_import(
     fromlist: tuple[str, ...] = (),
     level: int = 0,
 ) -> Any:
-    if level or name not in _ALLOWED_MODULES:
+    if level or not _module_is_allowed(name):
         raise ImportError(f"module is not allowed: {name}")
     return __import__(name, globals_, locals_, fromlist, level)
+
+
+def _safe_hasattr(value: Any, name: str) -> bool:
+    if not isinstance(name, str) or name.startswith("_"):
+        return False
+    return hasattr(value, name)
 
 
 def _safe_builtins() -> dict[str, Any]:
@@ -81,18 +118,26 @@ def _safe_builtins() -> dict[str, Any]:
         "all": all,
         "any": any,
         "bool": bool,
+        "chr": chr,
+        "complex": complex,
         "dict": dict,
         "divmod": divmod,
         "enumerate": enumerate,
         "filter": filter,
         "float": float,
+        "hasattr": _safe_hasattr,
+        "isinstance": isinstance,
         "int": int,
+        "iter": iter,
         "len": len,
         "list": list,
         "map": map,
         "max": max,
         "min": min,
+        "next": next,
+        "ord": ord,
         "pow": pow,
+        "print": print,
         "range": range,
         "reversed": reversed,
         "round": round,
@@ -102,6 +147,11 @@ def _safe_builtins() -> dict[str, Any]:
         "sum": sum,
         "tuple": tuple,
         "zip": zip,
+        "Exception": Exception,
+        "ImportError": ImportError,
+        "RuntimeError": RuntimeError,
+        "TypeError": TypeError,
+        "ValueError": ValueError,
     }
 
 
@@ -112,15 +162,17 @@ def main() -> None:
     _validate(tree)
     globals_dict = {
         "__builtins__": _safe_builtins(),
+        "__name__": "__main__",
         "Decimal": Decimal,
         "Fraction": Fraction,
         "math": math,
     }
-    exec(compile(tree, "<generated-program>", "exec"), globals_dict)
-    solution = globals_dict.get("solution")
-    if not callable(solution):
-        raise ValueError("generated program must define callable solution()")
-    result = solution()
+    with redirect_stdout(io.StringIO()):
+        exec(compile(tree, "<generated-program>", "exec"), globals_dict)
+        solution = globals_dict.get("solution")
+        if not callable(solution):
+            raise ValueError("generated program must define callable solution()")
+        result = solution()
     json.dump(
         {"ok": True, "value": result, "value_type": type(result).__name__},
         sys.stdout,
