@@ -156,21 +156,15 @@ def _git_file_blob(data_root: Path, *, revision: str, relative_path: Path) -> st
 def _find_resume_experiment(
     output_root: Path,
     *,
-    profile_name: str,
     identity: dict[str, Any],
     data_root: Path,
     dataset_relative_path: Path,
 ) -> tuple[Path, str, dict[str, Any]] | None:
     if not output_root.is_dir():
         return None
-    prefix = f"{safe_slug(profile_name)}__mu-math__"
     matches: list[tuple[Path, str, dict[str, Any]]] = []
-    for directory in sorted(output_root.iterdir()):
-        if not directory.is_dir() or not directory.name.startswith(prefix):
-            continue
-        manifest_path = directory / "experiment.json"
-        if not manifest_path.is_file():
-            continue
+    for manifest_path in sorted(output_root.rglob("experiment.json")):
+        directory = manifest_path.parent
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             fingerprint = manifest["fingerprint"]
@@ -656,11 +650,11 @@ def main() -> int:
     identity = _experiment_identity(configuration, dataset_blob=dataset_blob)
     stable_fingerprint = configuration_fingerprint(identity)
     output_root = args.output_root.resolve()
+    judge_root = output_root / safe_slug(profile.profile) / "judge"
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         resume = _find_resume_experiment(
             output_root,
-            profile_name=profile.profile,
             identity=identity,
             data_root=data_root,
             dataset_relative_path=data_relative_path,
@@ -672,8 +666,8 @@ def main() -> int:
         fingerprint = stable_fingerprint
         manifest_configuration = configuration
         directory = timestamped_experiment_directory(
-            output_root,
-            components=(profile.profile, "mu-math"),
+            judge_root,
+            components=("official-test",),
             fingerprint=fingerprint,
             created_at=started_at,
         )
@@ -765,8 +759,8 @@ def main() -> int:
 
     if resume is None:
         directory = timestamped_experiment_directory(
-            output_root,
-            components=(profile.profile, "mu-math"),
+            judge_root,
+            components=("official-test",),
             fingerprint=fingerprint,
             created_at=started_at,
             claim=True,

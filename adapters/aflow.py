@@ -101,7 +101,7 @@ class AFlowAdapter(MethodAdapter):
         self.validate_source()
 
     @staticmethod
-    def _validate_workflow(workflow: dict[str, Any]) -> None:
+    def validate_workflow(workflow: dict[str, Any]) -> None:
         if not isinstance(workflow.get("id"), str) or not workflow["id"]:
             raise ValueError("AFlow workflow requires a non-empty id")
         nodes = workflow.get("nodes")
@@ -185,13 +185,15 @@ class AFlowAdapter(MethodAdapter):
         ):
             raise ValueError("AFlow optimization_split must be a string or null")
         optimization_cost = artifact["optimization_cost"]
-        if (
+        if optimization_cost is not None and (
             not isinstance(optimization_cost, (int, float))
             or isinstance(optimization_cost, bool)
             or optimization_cost < 0
         ):
-            raise ValueError("AFlow optimization_cost must be non-negative")
-        self._validate_workflow(workflow)
+            raise ValueError(
+                "AFlow optimization_cost must be non-negative or null"
+            )
+        self.validate_workflow(workflow)
 
         values: dict[str, str] = {}
         complete_outputs: dict[str, bool] = {}
@@ -207,8 +209,12 @@ class AFlowAdapter(MethodAdapter):
             operator = node["operator"]
             inputs = [values[item] for item in node.get("inputs", [])]
             if operator == "custom":
+                instruction = node.get("instruction", "").strip()
+                instruction_prefix = (
+                    f"{instruction}\n\n" if instruction else ""
+                )
                 prompt = (
-                    f"{node.get('instruction', '')}{problem.prompt}"
+                    f"{instruction_prefix}{problem.prompt}"
                     f"{answer_instruction}"
                 )
                 last_generation = backend.generate(
@@ -254,7 +260,36 @@ class AFlowAdapter(MethodAdapter):
                     ],
                     config={},
                 )
-                letter = _solution_letter(last_generation.text, len(inputs))
+                try:
+                    letter = _solution_letter(
+                        last_generation.text, len(inputs)
+                    )
+                except ValueError as exc:
+                    trace.append(
+                        {
+                            "id": node_id,
+                            "operator": operator,
+                            "inputs": node.get("inputs", []),
+                            "output": "",
+                        }
+                    )
+                    return replace(
+                        last_generation,
+                        text="",
+                        metadata={
+                            **last_generation.metadata,
+                            "method": "aflow",
+                            "workflow": workflow,
+                            "workflow_artifact": artifact,
+                            "workflow_trace": trace,
+                            "method_failure": {
+                                "stage": "ensemble_selection",
+                                "exception_type": type(exc).__name__,
+                                "error": str(exc),
+                                "raw_output": last_generation.text,
+                            },
+                        },
+                    )
                 selected_index = ord(letter) - ord("A")
                 value = inputs[selected_index]
                 output_complete = complete_outputs[
@@ -304,8 +339,36 @@ class AFlowAdapter(MethodAdapter):
                             f"Error: {exc}\nRewrite the complete program."
                         )
                 if executed is None:
-                    raise ProgramExecutionError(
+                    error = (
                         f"AFlow Programmer failed after {max_attempts} attempts"
+                    )
+                    values[node_id] = ""
+                    complete_outputs[node_id] = False
+                    trace.append(
+                        {
+                            "id": node_id,
+                            "operator": operator,
+                            "inputs": node.get("inputs", []),
+                            "output": "",
+                            "attempts": attempts,
+                        }
+                    )
+                    assert last_generation is not None
+                    return replace(
+                        last_generation,
+                        text="",
+                        metadata={
+                            **last_generation.metadata,
+                            "method": "aflow",
+                            "workflow": workflow,
+                            "workflow_artifact": artifact,
+                            "workflow_trace": trace,
+                            "method_failure": {
+                                "stage": "program_execution",
+                                "exception_type": "ProgramExecutionError",
+                                "error": error,
+                            },
+                        },
                     )
                 value = format_final_answer(executed.value)
                 output_complete = True
@@ -338,3 +401,19 @@ class AFlowAdapter(MethodAdapter):
                 "workflow_trace": trace,
             },
         )
+
+
+def workflow_call_bounds(workflow: dict[str, Any]) -> tuple[int, int]:
+    """Return safe per-sample call bounds for a frozen declarative workflow."""
+
+    AFlowAdapter.validate_workflow(workflow)
+    maximum = sum(
+        node.get("max_attempts", 3)
+        if node["operator"] == "programmer"
+        else 1
+        for node in workflow["nodes"]
+    )
+    # Invalid model-produced ensemble/program outputs may terminate a workflow
+    # after its first call and are scored as method failures, not infrastructure
+    # errors. Keep the lower bound at one so those samples can be finalized.
+    return 1, maximum

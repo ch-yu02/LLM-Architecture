@@ -1,10 +1,11 @@
 # 实验运行指南
 
-两个入口：
+三个入口：
 
 | 脚本 | 用途 |
 | --- | --- |
 | `scripts/run_experiments.sh` | 方法 × 数据集 × repeat 正式评测 |
+| `scripts/run_aflow.sh` | 在 validation 搜索 AFlow workflow，或用冻结 workflow 测试 |
 | `scripts/run_mu_math.sh` | 在 µ-MATH 上评估候选 U-MATH judge |
 
 以下命令均在 `benchmark-runner` 根目录执行。
@@ -23,6 +24,7 @@ cp .env.example .env
 ```dotenv
 DASHSCOPE_API_KEY_BEIJING=你的_API_KEY
 DEEPSEEK_API_KEY=你的_API_KEY
+GEMINI_API_KEY=你的_API_KEY
 ```
 
 只需填写本次所选 profile 对应的 key。
@@ -95,7 +97,7 @@ Python 环境进入实验指纹。改变这些设置会创建新目录，不会�
 
 ```bash
 ./scripts/run_experiments.sh \
-  --methods direct,pal,self_refine,aflow \
+  --methods direct,pal,self_refine \
   --datasets gsm1k,math-perturb,harp,mathconstruct \
   --repeats 3 \
   --batch-size 10 \
@@ -107,7 +109,7 @@ Python 环境进入实验指纹。改变这些设置会创建新目录，不会�
 
 ```bash
 ./scripts/run_experiments.sh \
-  --methods pal,self_refine,aflow \
+  --methods pal,self_refine \
   --datasets gsm1k,math-perturb,harp,mathconstruct \
   --repeats 3 \
   --batch-size 100 \
@@ -129,10 +131,10 @@ Python 环境进入实验指纹。改变这些设置会创建新目录，不会�
 方法：
 
 ```text
-direct, zero_shot_cot, pal, self_refine, aflow, all
+direct, zero_shot_cot, pal, self_refine, all
 ```
 
-当前 AFlow 只评估固化 workflow，不执行在线 optimizer。
+AFlow 不属于该矩阵，统一通过下一节的专用脚本运行。
 
 数据集：
 
@@ -145,8 +147,10 @@ direct, zero_shot_cot, pal, self_refine, aflow, all
 | `u-math-text-only` | 720 | 锁定的 LLM judge |
 | `mathconstruct` | 439 | 官方 `parse_and_check` |
 
-当前 U-MATH judge lock 为 `pending`，所以选择 `u-math-text-only` 或
-`--datasets all` 会在创建产物和调用 API 前退出。
+U-MATH judge 已固定为 `qwen3.7-flash-2026-07-15`，使用
+`configs/judges/u_math.lock.toml` 指向的固定 profile。它不接受命令行覆盖，也不
+继承被测模型的 temperature、seed 或 repeat 设置；`--datasets all` 可以直接包含
+U-MATH。
 `--datasets all` 只包含五个完整基准，不包含 `harp-small`，避免重复评测 HARP
 子集。需要小集时显式传入 `--datasets harp-small`；HARP validation 仅供优化与
 选型，不是正式评测 dataset，不能通过该参数选择。
@@ -204,11 +208,6 @@ repeat 可能完全一致。
   --methods self_refine \
   --datasets gsm1k \
   --method-param self_refine.max_refinements=2
-
-./scripts/run_experiments.sh \
-  --methods aflow \
-  --datasets gsm1k \
-  --method-config aflow=/absolute/path/to/override.toml
 ```
 
 `--method-param` 可重复，且在 `--method-config` 之后应用。方法参数进入实验指纹。
@@ -217,13 +216,74 @@ repeat 可能完全一致。
 
 ```text
 results/experiments/
-└── <model>__<method>__<dataset>__r001__<tag>__<UTC-time>__<fingerprint>/
-    ├── experiment.json
-    ├── records.jsonl
-    ├── api_calls.jsonl
-    ├── errors.jsonl
-    └── summary.json
+└── <model>/
+    └── <method>/
+        ├── <dataset-a>__r001__<tag>__<UTC-time>__<fingerprint>/
+        ├── <dataset-a>__r002__<tag>__<UTC-time>__<fingerprint>/
+        └── <dataset-b>__r001__<tag>__<UTC-time>__<fingerprint>/
 ```
+
+每个实验单元目录内包含 `experiment.json`、`records.jsonl`、
+`api_calls.jsonl`、`errors.jsonl`（发生错误时）和 `summary.json`。
+
+## AFlow：`run_aflow.sh`
+
+脚本一次只处理一个数据集，支持 `gsm1k`、`math-perturb`、`harp` 和
+`u-math-text-only`。不接受 MathConstruct，也不包含其他方法的矩阵参数。
+
+### 搜索模式
+
+搜索模型迭代提出 declarative workflow，执行模型只在对应的固化 validation 上评估；
+每轮保存样本级结果，最终按 validation accuracy 选择 workflow，同分时优先模型调用
+更少、节点更少的图。
+
+```bash
+./scripts/run_aflow.sh \
+  --mode search \
+  --dataset gsm1k \
+  --model qwen35_flash \
+  --optimizer-model qwen35_flash \
+  --search-rounds 3 \
+  --validation-size all \
+  --concurrency 4
+```
+
+调试时可用 `--validation-size 10`。默认 optimizer 使用 `--model`；
+`--optimizer-temperature`、`--optimizer-max-output-tokens` 和
+`--optimizer-seed` 只控制优化器调用。搜索产物位于：
+
+```text
+results/aflow/<execution-model>/aflow/
+└── search__<dataset>__<UTC-time>__<fingerprint>/
+    ├── search.json
+    ├── search_state.json
+    ├── optimizer_api_calls.jsonl
+    ├── candidates/round-*/
+    └── workflow.json
+```
+
+### 测试模式
+
+`--workflow` 必须指向搜索生成的 `workflow.json` 或其目录。脚本检查 workflow 已冻结、
+没有使用 test 优化，并且绑定的数据集与 `--dataset` 完全一致。
+
+```bash
+./scripts/run_aflow.sh \
+  --mode test \
+  --dataset gsm1k \
+  --model qwen35_flash \
+  --workflow results/aflow/<execution-model>/aflow/<search-id>/workflow.json \
+  --batch-size 100 \
+  --repeats 3 \
+  --seed 42 \
+  --seed-mode increment \
+  --concurrency 4
+```
+
+再次执行同一设置会按样本续跑。测试结果位于
+`results/aflow/<execution-model>/aflow/<dataset>__rNNN__.../`，与对应模型的搜索目录同层。`--batch-size`、
+`--repeats` 和 `--seed-mode` 只用于 test；`--search-rounds` 和
+`--validation-size` 只用于 search。
 
 `UTC-time` 格式为 `YYYYMMDDTHHMMSSZ`，记录该指纹首次创建时间；续跑复用原目录。
 
@@ -298,11 +358,13 @@ judge，不运行论文方法，也不读取正式 U-MATH judge lock。
 | --- | --- | --- |
 | `qwen35_flash`（默认） | `qwen3.5-flash-2026-02-23` | `DASHSCOPE_API_KEY_BEIJING` |
 | `qwen37_flash` | `qwen3.7-flash-2026-07-15` | `DASHSCOPE_API_KEY_BEIJING` |
+| `gemini36_flash` | `gemini-3.6-flash`，reasoning effort=`medium` | `GEMINI_API_KEY` |
 | `deepseek_v4_pro` | `deepseek-v4-pro`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
 | `deepseek_v4_flash` | `deepseek-v4-flash`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
 
-Qwen 候选固定 `temperature=0`、`top_p=1`、`seed=20260729`；
-DeepSeek thinking 模式不发送 `temperature`、`top_p` 或 `seed`。所有候选均固定
+Qwen 候选固定 `temperature=0`、`top_p=1`、`seed=20260729`；Gemini 3.6
+Flash 免费层使用 Google AI Studio API key，Gemini 与 DeepSeek thinking 模式均不
+发送 `temperature`、`top_p` 或 `seed`。所有候选均固定
 `max_output_tokens=4096`。
 
 修改 profile 会创建新实验目录。测试其他 judge 时建议复制为新文件：
@@ -330,12 +392,14 @@ judge 输出 `Yes`、`No` 或 `Inconclusive`。格式不合规时按 `Inconclusi
 
 ```text
 results/mu_math/
-└── <judge-profile>__mu-math__<UTC-time>__<fingerprint>/
-    ├── experiment.json
-    ├── records.jsonl
-    ├── api_calls.jsonl
-    ├── errors.jsonl
-    └── summary.json
+└── <judge-profile>/
+    └── judge/
+        └── official-test__<UTC-time>__<fingerprint>/
+            ├── experiment.json
+            ├── records.jsonl
+            ├── api_calls.jsonl
+            ├── errors.jsonl
+            └── summary.json
 ```
 
 ## 错误与退出码
@@ -352,5 +416,6 @@ results/mu_math/
 
 ```bash
 ./scripts/run_experiments.sh --help
+./scripts/run_aflow.sh --help
 ./scripts/run_mu_math.sh --help
 ```

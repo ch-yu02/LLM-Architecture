@@ -155,6 +155,20 @@ def _safe_builtins() -> dict[str, Any]:
     }
 
 
+def _latex_rendering(value: Any) -> str | None:
+    """Render mathematical value types before crossing the JSON boundary."""
+
+    if isinstance(value, Fraction):
+        if value.denominator == 1:
+            return str(value.numerator)
+        return rf"\frac{{{value.numerator}}}{{{value.denominator}}}"
+
+    sympy = sys.modules.get("sympy")
+    if sympy is not None and isinstance(value, sympy.Basic):
+        return str(sympy.latex(value))
+    return None
+
+
 def main() -> None:
     request = json.load(sys.stdin)
     _set_limits(request)
@@ -174,7 +188,12 @@ def main() -> None:
             raise ValueError("generated program must define callable solution()")
         result = solution()
     json.dump(
-        {"ok": True, "value": result, "value_type": type(result).__name__},
+        {
+            "ok": True,
+            "value": result,
+            "value_type": type(result).__name__,
+            "latex_value": _latex_rendering(result),
+        },
         sys.stdout,
         ensure_ascii=False,
         default=str,

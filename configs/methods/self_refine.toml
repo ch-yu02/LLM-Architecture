@@ -4,7 +4,9 @@ adapter = "adapters.self_refine.SelfRefineAdapter"
 source_path = "../../../methods/Self-Refine"
 
 [integration]
-task_template = "gsm"
+task_profiles = ["gsm-python", "text-math"]
+gsm_datasets = ["gsm1k"]
+text_datasets = ["math-perturb", "harp", "u-math-text-only"]
 stages = ["init", "feedback", "iterate"]
 external_dependency = "replaced_by_shared_model_backend"
 
@@ -21,7 +23,7 @@ allowed_inference_overrides = ["temperature"]
 
 [security]
 executor = "executors.RestrictedPythonExecutor"
-protocol = "pal-python-v4"
+protocol = "pal-python-v5"
 allowed_imports = [
   "cmath",
   "collections",

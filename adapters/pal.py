@@ -12,6 +12,70 @@ from executors import ProgramExecutionError, RestrictedPythonExecutor
 from .base import MethodAdapter
 
 
+_PROGRAM_RETURN_CONTRACTS = {
+    "math-perturb": (
+        "Return only the final mathematical answer from solution(). The return "
+        "value may be a Python number, Fraction, SymPy expression, or a plain "
+        "string for symbolic answers. Preserve exact symbolic values instead of "
+        "converting them to floating-point approximations. A returned string "
+        "must contain valid LaTeX answer content, not Python expression syntax. "
+        "For multipart answers, return one formatted string rather than a Python "
+        "list or tuple. Do not include Answer:, \\boxed, or math mode delimiters "
+        "in the returned string."
+    ),
+    "harp": (
+        "Return only the single final mathematical answer from solution(). The "
+        "return value may be a Python number, Fraction, SymPy expression, or a "
+        "plain string for symbolic answers. Preserve exact symbolic values "
+        "instead of converting them to floating-point approximations. A returned "
+        "string must contain valid LaTeX answer content, not Python expression "
+        "syntax. Preserve units, variable assignments, and textual qualifiers "
+        "required by the question. For multipart answers, return one formatted "
+        "string rather than a Python list or tuple. Do not include Answer:, "
+        "\\boxed, or math mode delimiters in the returned string."
+    ),
+    "harp-small": (
+        "Return only the single final mathematical answer from solution(). The "
+        "return value may be a Python number, Fraction, SymPy expression, or a "
+        "plain string for symbolic answers. Preserve exact symbolic values "
+        "instead of converting them to floating-point approximations. A returned "
+        "string must contain valid LaTeX answer content, not Python expression "
+        "syntax. Preserve units, variable assignments, and textual qualifiers "
+        "required by the question. For multipart answers, return one formatted "
+        "string rather than a Python list or tuple. Do not include Answer:, "
+        "\\boxed, or math mode delimiters in the returned string."
+    ),
+    "u-math-text-only": (
+        "Return the complete final answer from solution(). Use a Python number "
+        "or mathematical object when possible; for symbolic, multipart, or "
+        "textual answers, return a plain Python string containing only the final "
+        "answer, using valid LaTeX rather than Python expression syntax for its "
+        "mathematical parts. Return one formatted string rather than a Python "
+        "list or tuple. Do not include Answer:, \\boxed, or math mode delimiters "
+        "in the returned string."
+    ),
+}
+
+_GENERIC_PROGRAM_SYSTEM_MESSAGE = (
+    "You solve mathematical problems by writing Python programs. Output only one "
+    "Python code block and no surrounding explanation."
+)
+
+
+def _generic_program_prompt(question: str, return_contract: str) -> str:
+    return f"""Write a self-contained Python program that solves the problem.
+The program must define a zero-argument function named solution(). Do not read
+input, access the network, or print the answer. You may use the mathematical
+libraries available in the execution environment.
+
+Return-value contract:
+{return_contract}
+
+Problem:
+{question.strip()}
+""".strip()
+
+
 def extract_python_code(text: str) -> str:
     if "```python" in text:
         return text.split("```python", 1)[1].split("```", 1)[0].strip()
@@ -23,10 +87,10 @@ def extract_python_code(text: str) -> str:
     return text.strip()
 
 
-def format_final_answer(value: Any) -> str:
+def format_final_answer(value: Any, *, latex_value: str | None = None) -> str:
     """Wrap a method-produced answer in the shared textual envelope."""
 
-    text = str(value).strip()
+    text = (latex_value if latex_value is not None else str(value)).strip()
     if text.lower().startswith("answer:"):
         text = text.split(":", 1)[1].strip()
     if _is_complete_box(text):
@@ -75,6 +139,37 @@ class PALAdapter(MethodAdapter):
         self.prompt_template = prompt_module["MATH_CHAT_BETA_PROMPT"]
         self.system_message = prompt_module["MATH_CHAT_BETA_SYSTEM_MESSAGE"]
 
+    def _messages_for(self, problem: Problem) -> tuple[list[dict[str, str]], str]:
+        return_contract = _PROGRAM_RETURN_CONTRACTS.get(problem.dataset)
+        if return_contract is None:
+            return (
+                [
+                    {"role": "system", "content": self.system_message},
+                    {
+                        "role": "user",
+                        "content": self.prompt_template.format(
+                            question=problem.prompt
+                        ),
+                    },
+                ],
+                "upstream-gsm-python",
+            )
+        return (
+            [
+                {
+                    "role": "system",
+                    "content": _GENERIC_PROGRAM_SYSTEM_MESSAGE,
+                },
+                {
+                    "role": "user",
+                    "content": _generic_program_prompt(
+                        problem.prompt, return_contract
+                    ),
+                },
+            ],
+            f"{problem.dataset}-program-return",
+        )
+
     def run(
         self,
         problem: Problem,
@@ -86,16 +181,8 @@ class PALAdapter(MethodAdapter):
             raise ValueError(
                 f"PAL has no method-specific parameters: {sorted(config)}"
             )
-        response = backend.generate(
-            [
-                {"role": "system", "content": self.system_message},
-                {
-                    "role": "user",
-                    "content": self.prompt_template.format(question=problem.prompt),
-                },
-            ],
-            config={},
-        )
+        messages, prompt_profile = self._messages_for(problem)
+        response = backend.generate(messages, config={})
         code = extract_python_code(response.text)
         try:
             executed = self.executor.execute(code)
@@ -109,6 +196,7 @@ class PALAdapter(MethodAdapter):
                 metadata={
                     **response.metadata,
                     "method": "pal",
+                    "prompt_profile": prompt_profile,
                     "generated_program": code,
                     "execution": {
                         "backend": "restricted_python",
@@ -120,17 +208,24 @@ class PALAdapter(MethodAdapter):
             )
         return replace(
             response,
-            text=format_final_answer(executed.value),
+            text=format_final_answer(
+                executed.value,
+                latex_value=executed.latex_value,
+            ),
             finish_reason="stop",
             metadata={
                 **response.metadata,
                 "method": "pal",
+                "prompt_profile": prompt_profile,
                 "generated_program": code,
                 "execution": {
                     "backend": "restricted_python",
                     "protocol": self.executor.protocol,
                     "status": "success",
                     "value_type": executed.value_type,
+                    "answer_rendering": (
+                        "latex" if executed.latex_value is not None else "plain"
+                    ),
                 },
             },
         )

@@ -64,7 +64,7 @@ from scorers.model_judge import (  # noqa: E402
 )
 
 
-PAPER_METHODS = ("pal", "self_refine", "aflow")
+PAPER_METHODS = ("pal", "self_refine")
 ALL_METHODS = ("direct", "zero_shot_cot", *PAPER_METHODS)
 PRIMARY_DATASETS = (
     "gsm1k",
@@ -224,21 +224,15 @@ def _result_problem_ids(path: Path) -> set[str]:
 def _find_resume_experiment(
     output_root: Path,
     *,
-    components: tuple[str, ...],
     identity: dict[str, Any],
     data_root: Path,
     dataset_paths: tuple[Path, ...],
 ) -> tuple[Path, str, dict[str, Any]] | None:
     if not output_root.is_dir():
         return None
-    prefix = "__".join(safe_slug(component) for component in components) + "__"
     matches: list[tuple[Path, str, dict[str, Any], set[str]]] = []
-    for directory in sorted(output_root.iterdir()):
-        if not directory.is_dir() or not directory.name.startswith(prefix):
-            continue
-        manifest_path = directory / "experiment.json"
-        if not manifest_path.is_file():
-            continue
+    for manifest_path in sorted(output_root.rglob("experiment.json")):
+        directory = manifest_path.parent
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             fingerprint = manifest["fingerprint"]
@@ -435,18 +429,6 @@ def _method_and_settings(
             policy,
             min_model_calls_per_problem=2,
             max_model_calls_per_problem=1 + max_refinements,
-        )
-    elif name == "aflow":
-        nodes = method_config["workflow"]["nodes"]
-        policy = replace(
-            policy,
-            min_model_calls_per_problem=len(nodes),
-            max_model_calls_per_problem=sum(
-                node.get("max_attempts", 3)
-                if node["operator"] == "programmer"
-                else 1
-                for node in nodes
-            ),
         )
     return method, tracked, method_config, policy
 
@@ -868,17 +850,8 @@ def main() -> int:
                         configuration,
                         dataset_artifacts=dataset_artifacts[dataset_name],
                     )
-                    components = (
-                        profile.profile,
-                        method_name,
-                        dataset_name,
-                        f"r{repeat_index:03d}",
-                    )
-                    if args.run_tag.strip():
-                        components = (*components, args.run_tag)
                     resume = _find_resume_experiment(
                         output_root,
-                        components=components,
                         identity=identity,
                         data_root=data_root,
                         dataset_paths=dataset_paths[dataset_name],
@@ -904,7 +877,6 @@ def main() -> int:
                         "stable_fingerprint": configuration_fingerprint(
                             identity
                         ),
-                        "components": components,
                         "resume": resume,
                         "public_judge": public_judge,
                     }
@@ -1074,10 +1046,8 @@ def main() -> int:
                         stable_fingerprint = plan["stable_fingerprint"]
                         public_judge = plan["public_judge"]
                         started_at = datetime.now(timezone.utc).isoformat()
-                        components = plan["components"]
                         resume = _find_resume_experiment(
                             output_root,
-                            components=components,
                             identity=identity,
                             data_root=data_root,
                             dataset_paths=dataset_paths[dataset_name],

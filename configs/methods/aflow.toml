@@ -7,8 +7,10 @@ source_path = "../../../methods/AFlow"
 upstream_python = "3.9"
 config_template = "../../../methods/AFlow/config/config2.example.yaml"
 native_datasets = ["GSM8K", "MATH"]
-execution_mode = "frozen_declarative_workflow"
-default_workflow = "official round_1 Custom node"
+execution_mode = "validation_search_then_frozen_test"
+default_workflow = "official round_1 Custom node used as search round 0"
+search_protocol = "aflow-validation-graph-search-v1"
+entrypoint = "scripts/run_aflow.sh"
 
 [workflow]
 id = "official-round-1-custom"

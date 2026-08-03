@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from adapters import AFlowAdapter, PALAdapter, SelfRefineAdapter
+from adapters.aflow import workflow_call_bounds
 from adapters.pal import format_final_answer
 from benchmark_core.fairness import FairnessPolicy
 from benchmark_core.runner import EvaluationRunner, SampleEvaluationError
@@ -55,6 +56,31 @@ class TwoProblemPlugin(OneProblemPlugin):
         yield Problem("tiny", "two", "What is 1+2?", "3")
 
 
+class TwoTextProblemPlugin:
+    name = "math-perturb"
+    aliases = ()
+
+    def iter_problems(self, context):
+        instruction = "Put the final answer in `\\boxed{...}`."
+        yield Problem(
+            self.name,
+            "one",
+            "What is 1+1?",
+            "2",
+            answer_instruction=instruction,
+        )
+        yield Problem(
+            self.name,
+            "two",
+            "What is 1+2?",
+            "3",
+            answer_instruction=instruction,
+        )
+
+    def create_scorer(self, context):
+        return NumericAnswerScorer()
+
+
 class MethodAdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -96,6 +122,22 @@ class MethodAdapterTests(unittest.TestCase):
         )
         self.assertEqual(result.value, "2")
 
+    def test_restricted_executor_renders_exact_math_values_as_latex(self):
+        fraction = RestrictedPythonExecutor().execute(
+            "from fractions import Fraction\n"
+            "def solution():\n"
+            "    return Fraction(1, 2)"
+        )
+        symbolic = RestrictedPythonExecutor().execute(
+            "from sympy import symbols\n"
+            "def solution():\n"
+            "    r = symbols('r')\n"
+            "    return r**2"
+        )
+
+        self.assertEqual(fraction.latex_value, r"\frac{1}{2}")
+        self.assertEqual(symbolic.latex_value, r"r^{2}")
+
     def test_restricted_executor_supports_pal_math_dependencies(self):
         result = RestrictedPythonExecutor().execute(
             "import numpy as np\n"
@@ -134,6 +176,10 @@ class MethodAdapterTests(unittest.TestCase):
             format_final_answer(r"\boxed{2} trailing"),
             r"Answer: \boxed{\boxed{2} trailing}",
         )
+        self.assertEqual(
+            format_final_answer("r**2", latex_value=r"r^{2}"),
+            r"Answer: \boxed{r^{2}}",
+        )
 
     def test_restricted_executor_rejects_imports_and_private_access(self):
         executor = RestrictedPythonExecutor()
@@ -160,6 +206,60 @@ class MethodAdapterTests(unittest.TestCase):
         self.assertEqual(record["generation"]["finish_reason"], "stop")
         self.assertIn("three examples", backend.calls[0]["messages"][1]["content"])
         self.assertEqual(record["generation"]["model_calls"], 1)
+
+    def test_pal_routes_non_gsm_datasets_to_program_return_contracts(self):
+        method = PALAdapter(self.pal_source)
+        cases = {
+            "math-perturb": "final mathematical answer",
+            "harp": "single final mathematical answer",
+            "u-math-text-only": "multipart, or textual answers",
+        }
+        for dataset, expected_contract in cases.items():
+            with self.subTest(dataset=dataset):
+                backend = QueueBackend(
+                    ["```python\ndef solution():\n    return 'x = 2'\n```"]
+                )
+                result = method.run(
+                    Problem(dataset, "one", "Find x.", "x = 2"),
+                    backend,
+                    config={},
+                )
+                prompt = backend.calls[0]["messages"][1]["content"]
+                self.assertIn("Return-value contract:", prompt)
+                self.assertIn(expected_contract, prompt)
+                self.assertIn("valid LaTeX", prompt)
+                self.assertIn("rather than a Python list or tuple", prompt)
+                if dataset == "harp":
+                    self.assertIn("Preserve units", prompt)
+                self.assertIn("Find x.", prompt)
+                self.assertNotIn("Olivia has $23", prompt)
+                self.assertNotIn(r"Answer: \\boxed", prompt)
+                self.assertEqual(result.text, r"Answer: \boxed{x = 2}")
+                self.assertEqual(
+                    result.metadata["prompt_profile"],
+                    f"{dataset}-program-return",
+                )
+
+    def test_pal_renders_symbolic_execution_result_as_latex(self):
+        backend = QueueBackend(
+            [
+                "```python\n"
+                "from sympy import symbols\n"
+                "def solution():\n"
+                "    r = symbols('r')\n"
+                "    return r**2\n"
+                "```"
+            ]
+        )
+        result = PALAdapter(self.pal_source).run(
+            Problem("harp-small", "one", "Find the area.", r"$r^{2}$"),
+            backend,
+            config={},
+        )
+
+        self.assertEqual(result.text, r"Answer: \boxed{r^{2}}")
+        self.assertEqual(result.metadata["execution"]["answer_rendering"], "latex")
+        self.assertEqual(result.metadata["execution"]["protocol"], "pal-python-v5")
 
     def test_pal_invalid_generated_program_is_scored_incorrect(self):
         backend = QueueBackend(
@@ -218,7 +318,7 @@ class MethodAdapterTests(unittest.TestCase):
             record["generation"]["method_details"]["execution"]["protocol"]
             for record in records
         ]
-        self.assertEqual(protocols, ["legacy-pal-python", "pal-python-v4"])
+        self.assertEqual(protocols, ["legacy-pal-python", "pal-python-v5"])
 
     def test_self_refine_end_to_end_and_usage_aggregation(self):
         backend = QueueBackend(
@@ -251,6 +351,120 @@ class MethodAdapterTests(unittest.TestCase):
             1,
         )
         self.assertEqual(backend.calls[1]["config"]["temperature"], 0.7)
+
+    def test_self_refine_uses_text_refinement_outside_gsm(self):
+        backend = QueueBackend(
+            [
+                "A mistaken solution. Final answer: 1",
+                (
+                    "<status>incorrect</status>\n"
+                    "<feedback>The arithmetic is wrong.</feedback>\n"
+                    "<revised_solution>Reasoning. Finally \\boxed{2}."
+                    "</revised_solution>"
+                ),
+            ]
+        )
+        problem = Problem(
+            "math-perturb",
+            "one",
+            "What is 1+1?",
+            "2",
+            answer_instruction="Put the final answer in `\\boxed{...}`.",
+        )
+        result = SelfRefineAdapter(self.self_refine_source).run(
+            problem,
+            backend,
+            config={
+                "max_refinements": 1,
+                "feedback_inference_overrides": {"temperature": 0.7},
+            },
+        )
+
+        self.assertEqual(result.text, r"Reasoning. Finally \boxed{2}.")
+        self.assertEqual(
+            result.metadata["prompt_profile"],
+            "math-perturb-text-refinement",
+        )
+        for call in backend.calls:
+            self.assertIn(r"Put the final answer in `\boxed{...}`.", call["messages"][0]["content"])
+            self.assertNotIn("solution using Python", call["messages"][0]["content"])
+
+    def test_self_refine_method_failures_are_scored_incorrect_and_continue(self):
+        backend = QueueBackend(
+            [
+                "First candidate",
+                "malformed refinement",
+                "Second candidate",
+                (
+                    "<status>correct</status>\n"
+                    "<feedback>The answer is correct.</feedback>\n"
+                    "<revised_solution>Reasoning. \\boxed{3}</revised_solution>"
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlResultStore(Path(directory) / "results.jsonl")
+            summary = EvaluationRunner().run(
+                experiment=Experiment(
+                    "exp-self-refine-text",
+                    "math-perturb",
+                    "self_refine",
+                    "fake-model",
+                ),
+                plugin=TwoTextProblemPlugin(),
+                context=DatasetContext(Path(directory)),
+                method=SelfRefineAdapter(self.self_refine_source),
+                backend=backend,
+                store=store,
+                method_config={
+                    "max_refinements": 1,
+                    "feedback_inference_overrides": {"temperature": 0.7},
+                },
+                fairness_policy=FairnessPolicy(
+                    min_model_calls_per_problem=2,
+                    max_model_calls_per_problem=2,
+                    allowed_inference_overrides=("temperature",),
+                ),
+            )
+            records = list(store.read())
+
+        self.assertEqual((summary.scored, summary.correct), (2, 1))
+        self.assertEqual(records[0]["generation"]["text"], "")
+        failure = records[0]["generation"]["method_details"]["method_failure"]
+        self.assertEqual(failure["stage"], "feedback_parse")
+        self.assertEqual(failure["exception_type"], "ValueError")
+        self.assertTrue(records[1]["score"]["correct"])
+
+    def test_self_refine_invalid_final_program_is_scored_incorrect(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return missing_name",
+                (
+                    "The implementation is correct.\n\n"
+                    "def solution():\n    return missing_name\n### END ###"
+                ),
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+        self.assertEqual((summary.scored, summary.correct), (1, 0))
+        self.assertEqual(record["generation"]["text"], "")
+        details = record["generation"]["method_details"]
+        self.assertEqual(
+            details["method_failure"]["stage"], "program_execution"
+        )
+        self.assertEqual(details["execution"]["status"], "error")
 
     def test_aflow_official_round_one_and_frozen_graph(self):
         default_backend = QueueBackend([r"\boxed{2}"])
@@ -384,6 +598,52 @@ class MethodAdapterTests(unittest.TestCase):
             "previous program failed",
             backend.calls[1]["messages"][0]["content"],
         )
+
+    def test_aflow_exhausted_programmer_is_a_scored_method_failure(self):
+        workflow = {
+            "id": "programmer-failure",
+            "nodes": [
+                {
+                    "id": "program",
+                    "operator": "programmer",
+                    "inputs": [],
+                    "max_attempts": 2,
+                }
+            ],
+            "output": "program",
+        }
+        self.assertEqual(workflow_call_bounds(workflow), (1, 2))
+        backend = QueueBackend(
+            [
+                "def solution():\n    return missing_one",
+                "def solution():\n    return missing_two",
+            ]
+        )
+        summary, record = self.run_method(
+            AFlowAdapter(self.aflow_source),
+            backend,
+            method_config={
+                "workflow": workflow,
+                "workflow_artifact": {
+                    "source": "unit-test optimizer",
+                    "optimization_split": "validation",
+                    "optimization_cost": 0,
+                    "evaluation_data_used": False,
+                    "frozen": True,
+                },
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=1,
+                max_model_calls_per_problem=2,
+            ),
+        )
+        self.assertEqual((summary.scored, summary.correct), (1, 0))
+        self.assertEqual(record["generation"]["text"], "")
+        details = record["generation"]["method_details"]
+        self.assertEqual(
+            details["method_failure"]["stage"], "program_execution"
+        )
+        self.assertEqual(record["generation"]["model_calls"], 2)
 
     def test_tracked_configs_construct_all_adapters(self):
         for name in ("pal", "self_refine", "aflow"):

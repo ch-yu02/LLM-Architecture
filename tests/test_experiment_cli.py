@@ -96,8 +96,10 @@ class ExperimentCliTests(unittest.TestCase):
                 )
                 return result
 
+            classified = output_root / "local" / "direct"
+            classified.mkdir(parents=True)
             complete = create_result(
-                "local__direct__harp-small__r001__old",
+                "local/direct/harp-small__r001__old",
                 "a" * 64,
                 ("p1", "p2", "p3"),
             )
@@ -109,12 +111,6 @@ class ExperimentCliTests(unittest.TestCase):
             self.assertEqual(
                 _find_resume_experiment(
                     output_root,
-                    components=(
-                        "local",
-                        "direct",
-                        "harp-small",
-                        "r001",
-                    ),
                     identity=identity,
                     data_root=DATA_ROOT,
                     dataset_paths=(),
@@ -281,8 +277,14 @@ class OpenAI:
             self.assertEqual(first.returncode, 0, first.stderr or first.stdout)
             self.assertEqual(len(call_log.read_text().splitlines()), 1)
             self.assertEqual(call_log.read_text().splitlines()[0], "1234")
-            directories = [path for path in output_root.iterdir() if path.is_dir()]
+            directories = [
+                path.parent for path in output_root.rglob("experiment.json")
+            ]
             self.assertEqual(len(directories), 1)
+            self.assertEqual(
+                directories[0].parent,
+                output_root / "local-test" / "direct",
+            )
             self.assertRegex(
                 directories[0].name,
                 r"__\d{8}T\d{6}Z__[0-9a-f]{16}$",
@@ -354,7 +356,7 @@ class OpenAI:
             )
             self.assertEqual(len(call_log.read_text().splitlines()), 3)
             self.assertEqual(
-                len([path for path in output_root.iterdir() if path.is_dir()]),
+                len(list(output_root.rglob("experiment.json"))),
                 1,
             )
             continued_lines = [
@@ -392,7 +394,7 @@ class OpenAI:
             )
             self.assertEqual(len(call_log.read_text().splitlines()), 4)
             self.assertEqual(
-                len([path for path in output_root.iterdir() if path.is_dir()]),
+                len(list(output_root.rglob("experiment.json"))),
                 2,
             )
 
@@ -426,8 +428,8 @@ class OpenAI:
                 json.loads(
                     (path / "experiment.json").read_text(encoding="utf-8")
                 )
-                for path in repeated_output.iterdir()
-                if path.is_dir()
+                for manifest_path in repeated_output.rglob("experiment.json")
+                for path in (manifest_path.parent,)
             ]
             self.assertEqual(len(repeated_manifests), 2)
             self.assertEqual(
@@ -475,15 +477,13 @@ class OpenAI:
                 len(
                     [
                         path
-                        for path in repeated_output.iterdir()
-                        if path.is_dir()
+                        for path in repeated_output.rglob("experiment.json")
                     ]
                 ),
                 2,
             )
-            for path in repeated_output.iterdir():
-                if not path.is_dir():
-                    continue
+            for manifest_path in repeated_output.rglob("experiment.json"):
+                path = manifest_path.parent
                 records = [
                     json.loads(line)
                     for line in (path / "records.jsonl")
@@ -523,9 +523,9 @@ class OpenAI:
             )
             self.assertEqual(matrix.returncode, 0, matrix.stderr or matrix.stdout)
             matrix_directories = [
-                path for path in matrix_output.iterdir() if path.is_dir()
+                path.parent for path in matrix_output.rglob("experiment.json")
             ]
-            self.assertEqual(len(matrix_directories), 20)
+            self.assertEqual(len(matrix_directories), 16)
             summaries = [
                 json.loads(
                     (path / "summary.json").read_text(encoding="utf-8")
@@ -557,8 +557,8 @@ class OpenAI:
                 harp_small.stderr or harp_small.stdout,
             )
             harp_small_directory = next(
-                path for path in harp_small_output.iterdir() if path.is_dir()
-            )
+                harp_small_output.rglob("experiment.json")
+            ).parent
             harp_small_manifest = json.loads(
                 (harp_small_directory / "experiment.json").read_text(
                     encoding="utf-8"
@@ -591,14 +591,15 @@ class OpenAI:
                 "harp_small_test_v1",
             )
 
-            pending_u_math_output = temporary / "pending-u-math"
-            pending_u_math = subprocess.run(
+            locked_u_math_output = temporary / "locked-u-math"
+            locked_u_math = subprocess.run(
                 [
                     *command,
                     "--datasets",
                     "u-math-text-only",
                     "--output-root",
-                    str(pending_u_math_output),
+                    str(locked_u_math_output),
+                    "--dry-run",
                 ],
                 cwd=ROOT,
                 env=environment,
@@ -606,9 +607,14 @@ class OpenAI:
                 capture_output=True,
                 check=False,
             )
-            self.assertEqual(pending_u_math.returncode, 2)
-            self.assertIn("judge is not locked yet", pending_u_math.stdout)
-            self.assertFalse(pending_u_math_output.exists())
+            self.assertEqual(
+                locked_u_math.returncode,
+                0,
+                locked_u_math.stderr or locked_u_math.stdout,
+            )
+            self.assertIn("qwen3.7-flash-2026-07-15", locked_u_math.stdout)
+            self.assertIn("fixed", locked_u_math.stdout)
+            self.assertFalse(locked_u_math_output.exists())
 
             error_output = temporary / "error-results"
             error_run = subprocess.run(
@@ -628,9 +634,7 @@ class OpenAI:
             self.assertEqual(error_run.returncode, 1)
             self.assertIn("ERROR direct × gsm1k", error_run.stdout)
             self.assertIn("stopped at the first failed sample", error_run.stdout)
-            error_directory = next(
-                path for path in error_output.iterdir() if path.is_dir()
-            )
+            error_directory = next(error_output.rglob("experiment.json")).parent
             self.assertFalse((error_directory / "records.jsonl").exists())
             diagnostics = [
                 json.loads(line)

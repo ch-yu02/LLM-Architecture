@@ -20,29 +20,64 @@ from scorers.judge import JudgeDecision, JudgeVerdict
 
 
 def _boxed_answer(answer: Any) -> str:
+    return rf"\boxed{{{_plain_answer(answer)}}}"
+
+
+def _plain_answer(answer: Any) -> str:
     text = str(answer).strip()
     if len(text) >= 2 and text.startswith("$") and text.endswith("$"):
-        text = text[1:-1].strip()
-    return rf"\boxed{{{text}}}"
+        return text[1:-1].strip()
+    return text
 
 
-def _program_for(answer: Any) -> str:
-    return f"def solution():\n    return {str(answer)!r}"
+def _program_for(answer: Any, *, plain_answer: bool = False) -> str:
+    value = _plain_answer(answer) if plain_answer else str(answer)
+    return f"def solution():\n    return {value!r}"
 
 
 class CannedSmokeBackend:
     """Positive-path backend for plumbing checks; never a performance baseline."""
 
-    def __init__(self, method: str, answer: Any):
-        program = _program_for(answer)
+    def __init__(self, method: str, dataset: str, answer: Any):
+        program = _program_for(
+            answer,
+            plain_answer=(
+                method == "pal"
+                and dataset
+                in {
+                    "math-perturb",
+                    "harp",
+                    "harp-small",
+                    "u-math-text-only",
+                }
+            ),
+        )
         if method == "self_refine":
-            self.responses = [
-                program,
-                (
-                    "There is no error in the code. It is correct.\n\n"
-                    f"{program}\n### END ###"
-                ),
-            ]
+            if dataset in {
+                "math-perturb",
+                "harp",
+                "harp-small",
+                "u-math-text-only",
+            }:
+                answer_text = _boxed_answer(answer)
+                if dataset in {"harp", "harp-small"}:
+                    answer_text = f"Answer: {answer_text}"
+                self.responses = [
+                    answer_text,
+                    (
+                        "<status>correct</status>\n"
+                        "<feedback>The answer is correct.</feedback>\n"
+                        f"<revised_solution>{answer_text}</revised_solution>"
+                    ),
+                ]
+            else:
+                self.responses = [
+                    program,
+                    (
+                        "There is no error in the code. It is correct.\n\n"
+                        f"{program}\n### END ###"
+                    ),
+                ]
         elif method == "pal":
             self.responses = [f"```python\n{program}\n```"]
         else:
@@ -213,7 +248,11 @@ class SmokeMatrixRunner:
             problem = plugin.problem
             for method_name in matrix["methods"]:
                 method, method_config, fairness = methods[method_name]
-                backend = CannedSmokeBackend(method_name, problem.reference_answer)
+                backend = CannedSmokeBackend(
+                    method_name,
+                    dataset_name,
+                    problem.reference_answer,
+                )
                 cell_started = time.monotonic()
                 try:
                     from tempfile import TemporaryDirectory

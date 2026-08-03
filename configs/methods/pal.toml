@@ -4,11 +4,13 @@ adapter = "adapters.pal.PALAdapter"
 source_path = "../../../methods/PAL"
 
 [integration]
-prompt_family = "math"
+prompt_family = "dataset-routed-math-program"
 execution_backend = "sandbox_required"
 supported_output = "python_program"
 model_calls_per_problem = 1
-prompt_source = "pal/prompt/math_prompts.py:MATH_CHAT_BETA_PROMPT"
+gsm_prompt_source = "pal/prompt/math_prompts.py:MATH_CHAT_BETA_PROMPT"
+adapted_datasets = ["math-perturb", "harp", "u-math-text-only"]
+submission_rendering = "execute solution(), render mathematical objects as LaTeX, then use shared final-answer envelope"
 
 [fairness]
 min_model_calls_per_problem = 1
@@ -17,7 +19,7 @@ allowed_inference_overrides = []
 
 [security]
 executor = "executors.RestrictedPythonExecutor"
-protocol = "pal-python-v4"
+protocol = "pal-python-v5"
 allowed_imports = [
   "cmath",
   "collections",

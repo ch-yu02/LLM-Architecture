@@ -90,7 +90,7 @@ class ExperimentArtifactTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, changed)
 
-    def test_experiment_directory_is_flat_and_readable(self):
+    def test_experiment_directory_is_hierarchical_and_readable(self):
         root = Path("/results/experiments")
         path = experiment_directory(
             root,
@@ -102,11 +102,14 @@ class ExperimentArtifactTests(unittest.TestCase):
             fingerprint="0123456789abcdef" * 4,
             created_at="2026-07-30T08:09:10+00:00",
         )
-        self.assertEqual(path.parent, root)
+        self.assertEqual(
+            path.parent,
+            root / "qwen-3.5-flash" / "self_refine",
+        )
         self.assertEqual(
             path.name,
-            "qwen-3.5-flash__self_refine__u-math-text-only__r002"
-            "__paper-baseline__20260730T080910Z__0123456789abcdef",
+            "u-math-text-only__r002__paper-baseline"
+            "__20260730T080910Z__0123456789abcdef",
         )
 
     def test_experiment_directory_reuses_timestamped_fingerprint(self):
@@ -225,6 +228,10 @@ class ExperimentArtifactTests(unittest.TestCase):
     def test_u_math_candidate_profiles_have_fixed_settings(self):
         candidate_dir = ROOT / "configs" / "judges" / "candidates"
         expected = {
+            "gemini36_flash.toml": (
+                "gemini-3.6-flash",
+                {"max_output_tokens": 4096},
+            ),
             "qwen35_flash.toml": (
                 "qwen3.5-flash-2026-02-23",
                 {
@@ -265,14 +272,26 @@ class ExperimentArtifactTests(unittest.TestCase):
                 self.assertEqual(deepseek.reasoning_effort, "high")
                 self.assertTrue(deepseek.omit_sampling_parameters)
 
-    def test_u_math_formal_runs_are_blocked_until_judge_is_locked(self):
-        with self.assertRaisesRegex(
-            ModelConfigurationError,
-            "judge is not locked yet",
-        ):
-            _load_locked_u_math_judge(
-                ROOT / "configs" / "judges" / "u_math.lock.toml"
-            )
+        gemini = load_model_profile(candidate_dir / "gemini36_flash.toml")
+        self.assertEqual(gemini.reasoning_effort, "medium")
+        self.assertTrue(gemini.omit_sampling_parameters)
+        self.assertEqual(gemini.api_key_env, "GEMINI_API_KEY")
+
+    def test_u_math_formal_judge_is_locked_to_qwen37_flash(self):
+        profile = _load_locked_u_math_judge(
+            ROOT / "configs" / "judges" / "u_math.lock.toml"
+        )
+        self.assertEqual(profile.profile, "candidate-judge-qwen37-flash-bj")
+        self.assertEqual(profile.model, "qwen3.7-flash-2026-07-15")
+        self.assertEqual(
+            profile.inference_defaults(),
+            {
+                "temperature": 0.0,
+                "top_p": 1.0,
+                "max_output_tokens": 4096,
+                "seed": 20260729,
+            },
+        )
 
     def test_u_math_lock_pins_the_scoring_protocol(self):
         with tempfile.TemporaryDirectory() as directory:

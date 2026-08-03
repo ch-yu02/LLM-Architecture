@@ -30,6 +30,7 @@ official-checkers = [
 [tool.setuptools.packages.find]
 include = [
   "adapters*",
+  "benchmark_aflow*",
   "benchmark_core*",
   "benchmark_datasets*",
   "benchmark_experiments*",

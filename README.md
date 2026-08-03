@@ -19,7 +19,7 @@ LLM_architecture/
 | --- | --- | --- | --- |
 | PAL | 固定源码快照，tree 已校验 | `PALAdapter` | runtime ready |
 | Self-Refine | 官方 Git clone | `SelfRefineAdapter` | runtime ready |
-| AFlow | 官方 Git clone | `AFlowAdapter` | frozen workflow runtime ready |
+| AFlow | 官方 Git clone | `AFlowAdapter` | validation search + frozen test ready |
 
 三种方法均已接入共享 `ModelBackend`，无需加载论文仓库中的旧模型 client。
 正式实验默认使用 Qwen3.5 Flash profile，也可从命令行切换兼容模型。接入语义、
@@ -91,16 +91,18 @@ latency/token/进度显示。`--seed` 会传给所有模型调用并纳入实验
 `--seed-mode increment` 使各 repeat 依次使用 `seed + repeat_index - 1`，默认
 `fixed` 则使用相同 seed。不指定 seed 时不发送该参数。`--concurrency` 控制每个
 实验单元内同时处理的样本数，默认 `1`；矩阵中的不同单元仍按顺序执行。并发数不
-进入实验指纹，续跑时可以调整。实验记录使用单层目录：
+进入实验指纹，续跑时可以调整。实验记录按模型和方法分层：
 
 ```text
 results/experiments/
-└── qwen35-flash-bj__direct__gsm1k__r001__<UTC-time>__<fingerprint>/
-    ├── experiment.json
-    ├── records.jsonl
-    ├── api_calls.jsonl
-    ├── errors.jsonl        # 仅发生样本错误时生成
-    └── summary.json
+└── qwen35-flash-bj/
+    └── direct/
+        └── gsm1k__r001__<UTC-time>__<fingerprint>/
+            ├── experiment.json
+            ├── records.jsonl
+            ├── api_calls.jsonl
+            ├── errors.jsonl        # 仅发生样本错误时生成
+            └── summary.json
 ```
 
 `UTC-time` 是该指纹首次创建实验时的 UTC 时间；同一指纹续跑会复用该目录。
@@ -113,14 +115,14 @@ results/experiments/
 完整命令与记录协议见
 [`docs/running_experiments.md`](docs/running_experiments.md)。
 小批量 HARP 使用 `--datasets harp-small`；`--datasets all` 仍只展开为五个完整
-基准，不包含该子集。
+基准，不包含该子集。AFlow 已从该矩阵拆出，使用 `scripts/run_aflow.sh` 的
+`--mode search` 和 `--mode test`。
 
-U-MATH 的正式 judge 将由 `configs/judges/u_math.lock.toml` 唯一锁定，
-不提供命令行覆盖能力。当前 lock 状态为 `pending`：在 µ-MATH 候选测试完成并
-选定 judge 前，正式 U-MATH 实验会拒绝启动，避免提前产生评分协议不一致的结果。
-候选 profile 放在 `configs/judges/candidates/`，其中 Qwen3.5-Flash 目前只是一项
-候选，并不是已经选定的正式 judge。锁定后，judge 仍不会继承被测模型、
-`--model-id`、实验 temperature 或 repeat seed。
+U-MATH 的正式 judge 由 `configs/judges/u_math.lock.toml` 唯一锁定为
+`qwen3.7-flash-2026-07-15`，不提供命令行覆盖能力。它固定使用 profile 中的
+`temperature=0`、`top_p=1`、`seed=20260729` 和 `max_output_tokens=4096`，不会
+继承被测模型、`--model-id`、实验 temperature 或 repeat seed。其他 profile 仍只
+用于 µ-MATH judge 对比，不会改变正式 U-MATH 评分。
 
 项目采用 U-MATH 官方的 manual CoT 判断流程：prompt 要求 judge 依次抽取候选
 答案、完成必要变换、比较参考答案并给出最终 verdict。按本项目约定，官方独立
@@ -139,7 +141,7 @@ TPR、TNR、PPV、NPV 及候选答案来源模型切片；普通 U-MATH 实验�
 `data/processed/mu_math.jsonl`，论文 Table 5 的结构化结果位于
 `data/mu_math/official_results.json`。
 
-候选 judge 使用独立的精简脚本测试，不依赖尚未锁定的正式 U-MATH 配置：
+候选 judge 使用独立的精简脚本测试，不会读取或覆盖正式 U-MATH judge lock：
 
 ```bash
 # 只检查 profile、数据、样本量和输出位置，不调用 API
@@ -157,8 +159,8 @@ TPR、TNR、PPV、NPV 及候选答案来源模型切片；普通 U-MATH 实验�
 
 该入口只保留 µ-MATH 候选测试需要的参数，不提供方法/数据集矩阵、repeat、被测模型
 覆盖或 checker 设置。每个 profile 定义一套完全固定的 judge 模型和推理参数；
-内置 `qwen35_flash`、`qwen37_flash`、`deepseek_v4_pro` 和
-`deepseek_v4_flash`，也可通过
+内置 `qwen35_flash`、`qwen37_flash`、`gemini36_flash`、
+`deepseek_v4_pro` 和 `deepseek_v4_flash`，也可通过
 `--judge /absolute/path/to/candidate.toml` 测试其他候选。结果会报告总体及
 四种候选答案来源模型切片的 macro-F1、TPR、TNR、PPV、NPV 和 Inconclusive 数量。
 Inconclusive 不映射为任一二元预测，对其真实类别计为漏判，并始终计作错误。
@@ -213,6 +215,7 @@ python3 scripts/verify_workspace.py
 
 ## 安全提示
 
-PAL 和 Self-Refine 会执行模型生成的 Python 程序。当前 adapter 使用受限 AST、
+PAL 以及 Self-Refine 的 GSM1K profile 会执行模型生成的 Python 程序；Self-Refine
+在 MATH-Perturb、HARP 和 U-MATH 上使用文本 refinement。程序执行使用受限 AST、
 独立子进程和资源上限，不在 runner 主进程执行。面对不受信任模型的正式实验，仍
 建议将 worker 再放入无网络容器或 microVM。

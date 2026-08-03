@@ -17,12 +17,13 @@ class ProgramExecutionError(RuntimeError):
 class ExecutionResult:
     value: Any
     value_type: str
+    latex_value: str | None = None
 
 
 class RestrictedPythonExecutor:
     """Execute generated mathematical Python in an isolated subprocess."""
 
-    protocol = "pal-python-v4"
+    protocol = "pal-python-v5"
 
     def __init__(
         self,
@@ -72,7 +73,11 @@ class RestrictedPythonExecutor:
             ) from exc
         if result.returncode != 0 or not payload.get("ok"):
             raise ProgramExecutionError(payload.get("error", "program failed"))
-        return ExecutionResult(payload.get("value"), payload["value_type"])
+        return ExecutionResult(
+            payload.get("value"),
+            payload["value_type"],
+            payload.get("latex_value"),
+        )
 
     def validate_environment(self) -> None:
         """Fail before an experiment if the declared PAL runtime is incomplete."""

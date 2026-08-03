@@ -59,8 +59,8 @@ class MuMathCliTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output_root = Path(directory)
-            legacy = output_root / "candidate__mu-math__legacy"
-            legacy.mkdir()
+            legacy = output_root / "candidate" / "judge" / "official-test__legacy"
+            legacy.mkdir(parents=True)
             legacy_fingerprint = configuration_fingerprint(old)
             (legacy / "experiment.json").write_text(
                 json.dumps(
@@ -74,7 +74,6 @@ class MuMathCliTests(unittest.TestCase):
             self.assertEqual(
                 _find_resume_experiment(
                     output_root,
-                    profile_name="candidate",
                     identity=identity,
                     data_root=DATA_ROOT,
                     dataset_relative_path=Path(
@@ -93,6 +92,8 @@ class MuMathCliTests(unittest.TestCase):
 
     def test_bundled_candidate_profiles_resolve_by_short_name_and_model(self):
         for value, filename in (
+            ("gemini36_flash", "gemini36_flash.toml"),
+            ("gemini-3.6-flash", "gemini36_flash.toml"),
             ("qwen37_flash", "qwen37_flash.toml"),
             ("qwen3.7-flash-2026-07-15", "qwen37_flash.toml"),
             ("deepseek_v4_pro", "deepseek_v4_pro.toml"),
@@ -267,10 +268,14 @@ class OpenAI:
             self.assertEqual(first.returncode, 0, first.stderr or first.stdout)
             self.assertEqual(call_log.read_text().splitlines(), ["42"])
             experiment_dirs = [
-                path for path in output_root.iterdir() if path.is_dir()
+                path.parent for path in output_root.rglob("experiment.json")
             ]
             self.assertEqual(len(experiment_dirs), 1)
             experiment_dir = experiment_dirs[0]
+            self.assertEqual(
+                experiment_dir.parent,
+                output_root / "local-mu-math-judge" / "judge",
+            )
             self.assertRegex(
                 experiment_dir.name,
                 r"__\d{8}T\d{6}Z__[0-9a-f]{16}$",
@@ -301,7 +306,7 @@ class OpenAI:
             )
             self.assertEqual(max_active_log.read_text(), "2")
             self.assertEqual(
-                len([path for path in output_root.iterdir() if path.is_dir()]),
+                len(list(output_root.rglob("experiment.json"))),
                 1,
             )
 
@@ -321,9 +326,7 @@ class OpenAI:
             )
             self.assertEqual(failed.returncode, 1, failed.stderr or failed.stdout)
             self.assertIn("stopped at the first failed sample", failed.stdout)
-            failed_directory = next(
-                path for path in failed_output.iterdir() if path.is_dir()
-            )
+            failed_directory = next(failed_output.rglob("experiment.json")).parent
             self.assertFalse((failed_directory / "records.jsonl").exists())
             self.assertEqual(
                 len((failed_directory / "errors.jsonl").read_text().splitlines()),

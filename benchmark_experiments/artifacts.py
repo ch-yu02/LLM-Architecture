@@ -47,16 +47,17 @@ def experiment_directory(
     run_tag: str = "",
     claim: bool = False,
 ) -> Path:
+    method_root = (
+        output_root / safe_slug(model) / safe_slug(method)
+    )
     components = [
-        safe_slug(model),
-        safe_slug(method),
         safe_slug(dataset),
         f"r{repeat:03d}",
     ]
     if run_tag.strip():
         components.append(safe_slug(run_tag))
     return timestamped_experiment_directory(
-        output_root,
+        method_root,
         components=components,
         fingerprint=fingerprint,
         created_at=created_at,
@@ -305,6 +306,7 @@ def tree_fingerprint(root: Path) -> str:
 
     included_roots = (
         "adapters",
+        "benchmark_aflow",
         "benchmark_core",
         "benchmark_datasets",
         "benchmark_experiments",
