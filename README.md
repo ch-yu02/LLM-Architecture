@@ -1,221 +1,174 @@
-# Math benchmark runner
+# LLM Architecture Math Benchmark Runner
 
-本仓库统一管理数学评测数据版本、论文方法源码版本和后续实验配置。论文官方源码
-保持在相邻的独立仓库中，不复制到本仓库。
+一个面向数学推理方法对比的可复现实验框架。项目统一管理数据集适配、论文方法、
+模型调用、官方评分器、断点续跑和实验记录，同时将数据、方法源码与 runner 保持为
+相互隔离的 Git 仓库。
+
+## 功能
+
+- 统一运行方法 × 数据集 × repeat 实验矩阵；
+- 支持样本级断点续跑、并发调用、seed 和方法专属参数；
+- 保存模型输出、评分结果、token usage、latency 和完整实验配置；
+- 优先复用数据集官方 normalization、答案解析和等价检查；
+- 使用固定数据文件和 Git object ID 标识实验数据；
+- 提供确定性 smoke matrix，在调用正式 API 前验证完整执行链路。
+
+## 支持范围
+
+| 数据集 | 测试规模 | 评分方式 |
+| --- | ---: | --- |
+| GSM1K | 1,205 | 数值答案匹配 |
+| MATH-Perturb | 230 | 官方 `answer_check` |
+| HARP | 4,302 | 官方 `latex_answer_check` |
+| HARP small | 1,434 | HARP test 的固定分层 1/3 子集 |
+| U-MATH text-only | 720 | 固定配置的 LLM judge |
+| MathConstruct | 439 | 官方 `parse_and_check` |
+
+通用实验矩阵包含以下方法：
+
+| 方法 | 类型 | 入口 |
+| --- | --- | --- |
+| `direct` | 单次直接回答基线 | `run_experiments.sh` |
+| `zero_shot_cot` | 单次 zero-shot CoT 基线 | `run_experiments.sh` |
+| `pal` | Program-Aided Language Models | `run_experiments.sh` |
+| `self_refine` | Self-Refine | `run_experiments.sh` |
+| `aflow` | validation workflow search + frozen test | `run_aflow.sh` |
+
+## 工作区结构
+
+数据和论文官方源码不复制进本仓库。默认工作区结构为：
 
 ```text
-LLM_architecture/
-├── math-benchmark-data/
+workspace/
 ├── benchmark-runner/
+├── math-benchmark-data/
 └── methods/
     ├── PAL/
     ├── Self-Refine/
     └── AFlow/
 ```
 
-## 当前状态
-
-| 方法 | 源码状态 | 数学入口 | 环境状态 |
-| --- | --- | --- | --- |
-| PAL | 固定源码快照，tree 已校验 | `PALAdapter` | runtime ready |
-| Self-Refine | 官方 Git clone | `SelfRefineAdapter` | runtime ready |
-| AFlow | 官方 Git clone | `AFlowAdapter` | validation search + frozen test ready |
-
-三种方法均已接入共享 `ModelBackend`，无需加载论文仓库中的旧模型 client。
-正式实验默认使用 Qwen3.5 Flash profile，也可从命令行切换兼容模型。接入语义、
-预算和安全边界见
-[`docs/method_adapters.md`](docs/method_adapters.md)。
-
-统一评测核心已接入五个完整数据集及 HARP 小集：
-
-| 数据集 | loader | scorer |
-| --- | --- | --- |
-| GSM1K | unified JSONL | 数值答案 |
-| MATH-Perturb | 固化 test JSONL（230 题） | 官方 `answer_check` |
-| HARP | 固化 test JSONL（4,302 题） | 官方 `latex_answer_check` |
-| HARP small | HARP test 的固化分层 1/3 子集（1,434 题） | 官方 `latex_answer_check` |
-| U-MATH text-only | 固化 test JSONL（720 题） | 显式注入的 LLM judge |
-| MathConstruct | 固化 JSONL（97 families / 439 题） | 官方 `parse_and_check` |
-
-runner 只依赖 `DatasetPlugin` 协议，不包含数据集名称分支。新增数据集方法见
-[`docs/adding_dataset.md`](docs/adding_dataset.md)。
-
-## 公平基础方法
-
-当前包含两个公平基础方法：
-
-| 方法 | 模型调用/题 | few-shot | 工具 |
-| --- | ---: | --- | --- |
-| `direct` | 1 | 否 | 否 |
-| `zero_shot_cot` | 1 | 否 | 否 |
-
-二者共享模型与推理参数，只改变求解策略指令。runner 强制调用预算，记录实际调用
-配置、latency 和 usage，并阻止同一 experiment ID 混入不同配置。公共配置位于
-`configs/evaluation/fair_baselines.toml`，详细约束见
-[`docs/fair_baselines.md`](docs/fair_baselines.md)。
-
-## Smoke matrix
-
-仓库提供固定的 5 数据集 × 5 方法 plumbing matrix：
-
-```bash
-.venv-checkers/bin/python scripts/run_smoke_matrix.py
-```
-
-矩阵使用确定性 canned backend，不代表模型性能；三套官方 checker 和方法执行链仍
-会真实运行。定义、范围与报告位置见
-[`docs/smoke_matrix.md`](docs/smoke_matrix.md)。
-
-## 运行正式实验
-
-默认模型配置为 `qwen3.5-flash-2026-02-23`，API key 仅从环境变量读取。安装实验
-依赖、配置 key 后可直接运行：
-
-```bash
-.venv-checkers/bin/pip install -r requirements/experiment-lock.txt
-.venv-checkers/bin/pip install -e . --no-deps
-cp .env.example .env
-# 编辑 .env，填入本次使用的 profile 对应 API key
-./scripts/run_experiments.sh \
-  --methods direct \
-  --datasets gsm1k \
-  --repeats 3 \
-  --batch-size 1 \
-  --concurrency 4 \
-  --seed 1234 \
-  --seed-mode increment
-```
-
-脚本支持方法 × 数据集 × 重复轮次矩阵、样本级断点续跑、方法专属参数以及实时
-latency/token/进度显示。`--seed` 会传给所有模型调用并纳入实验指纹；
-`--seed-mode increment` 使各 repeat 依次使用 `seed + repeat_index - 1`，默认
-`fixed` 则使用相同 seed。不指定 seed 时不发送该参数。`--concurrency` 控制每个
-实验单元内同时处理的样本数，默认 `1`；矩阵中的不同单元仍按顺序执行。并发数不
-进入实验指纹，续跑时可以调整。实验记录按模型和方法分层：
-
-```text
-results/experiments/
-└── qwen35-flash-bj/
-    └── direct/
-        └── gsm1k__r001__<UTC-time>__<fingerprint>/
-            ├── experiment.json
-            ├── records.jsonl
-            ├── api_calls.jsonl
-            ├── errors.jsonl        # 仅发生样本错误时生成
-            └── summary.json
-```
-
-`UTC-time` 是该指纹首次创建实验时的 UTC 时间；同一指纹续跑会复用该目录。
-
-`records.jsonl` 使用紧凑格式：首行只记录一次 experiment identity；样本行保留
-题目正文、参考答案、dataset metadata、模型输出、评分、token、耗时、模型调用数
-和必要的方法产物。完整实验配置与 revision 统一保存在 `experiment.json`，不会在
-每条样本中重复。
-
-完整命令与记录协议见
-[`docs/running_experiments.md`](docs/running_experiments.md)。
-小批量 HARP 使用 `--datasets harp-small`；`--datasets all` 仍只展开为五个完整
-基准，不包含该子集。AFlow 已从该矩阵拆出，使用 `scripts/run_aflow.sh` 的
-`--mode search` 和 `--mode test`。
-
-U-MATH 的正式 judge 由 `configs/judges/u_math.lock.toml` 唯一锁定为
-`qwen3.7-flash-2026-07-15`，不提供命令行覆盖能力。它固定使用 profile 中的
-`temperature=0`、`top_p=1`、`seed=20260729` 和 `max_output_tokens=4096`，不会
-继承被测模型、`--model-id`、实验 temperature 或 repeat seed。其他 profile 仍只
-用于 µ-MATH judge 对比，不会改变正式 U-MATH 评分。
-
-项目采用 U-MATH 官方的 manual CoT 判断流程：prompt 要求 judge 依次抽取候选
-答案、完成必要变换、比较参考答案并给出最终 verdict。按本项目约定，官方独立
-`Qwen2.5-72B` extractor 被移除，judge 自己必须在最后一行输出
-`Yes`、`No` 或 `Inconclusive`。本地确定性解析器只读取最后一个独立 verdict；
-如果输出不合规，则回退为 `Inconclusive`。只有 `Yes` 计为正确，`No` 和
-`Inconclusive` 都计为错误。
-
-该协议记为 `u-math-manual-cot-self-verdict`，属于“官方 manual CoT + 自判三态”
-变体，不能声称逐项复刻带 Qwen2.5-72B extractor 的原始官方流水线。正式实验会在
-manifest 和样本记录中保存协议版本、judge profile、三态 verdict、解析状态、
-latency 和 token usage。官方 µ-MATH 的比较仍以 macro-F1 为主，并应同时报告
-TPR、TNR、PPV、NPV 及候选答案来源模型切片；普通 U-MATH 实验汇总 accuracy。
-
-用于比较 judge 的官方 µ-MATH 数据位于数据仓库
-`data/processed/mu_math.jsonl`，论文 Table 5 的结构化结果位于
-`data/mu_math/official_results.json`。
-
-候选 judge 使用独立的精简脚本测试，不会读取或覆盖正式 U-MATH judge lock：
-
-```bash
-# 只检查 profile、数据、样本量和输出位置，不调用 API
-./scripts/run_mu_math.sh --judge qwen37_flash --batch-size 10 --dry-run
-
-# 每次顺序处理接下来的 100 行；保持 judge profile 不变即可样本级续跑
-./scripts/run_mu_math.sh \
-  --judge qwen37_flash \
-  --batch-size 100 \
-  --concurrency 8
-
-# 处理当前候选 judge 的全部剩余行
-./scripts/run_mu_math.sh --judge deepseek_v4_pro --batch-size all
-```
-
-该入口只保留 µ-MATH 候选测试需要的参数，不提供方法/数据集矩阵、repeat、被测模型
-覆盖或 checker 设置。每个 profile 定义一套完全固定的 judge 模型和推理参数；
-内置 `qwen35_flash`、`qwen37_flash`、`gemini36_flash`、
-`deepseek_v4_pro` 和 `deepseek_v4_flash`，也可通过
-`--judge /absolute/path/to/candidate.toml` 测试其他候选。结果会报告总体及
-四种候选答案来源模型切片的 macro-F1、TPR、TNR、PPV、NPV 和 Inconclusive 数量。
-Inconclusive 不映射为任一二元预测，对其真实类别计为漏判，并始终计作错误。
-
-两个入口的 `--concurrency` 都只改变调度，不改变实验定义，默认值均为 `1`。记录由
-主线程按数据集原始顺序写入，因此并发完成顺序不会影响断点续跑。profile 中的
-`min_request_interval_seconds` 仍对共享 backend 的所有请求生效；如果它设为
-`1.0`，请求启动最多约每秒一次，即使提高并发数也只会重叠等待响应，不会绕过限速。
-
-## 环境与测试
-
-runner、API client 和官方 checker 统一安装在 runner 自己的
-`.venv-checkers`；三个论文源码仓库不安装到该环境，也不会彼此导入。官方方法只通过
-本仓库 adapter 读取固定 prompt/workflow，生成程序则进入受限子进程。推荐使用已经
-验证的依赖锁：
-
-```bash
-python3 -m venv .venv-checkers
-.venv-checkers/bin/pip install -r requirements/experiment-lock.txt
-.venv-checkers/bin/pip install -e . --no-deps
-.venv-checkers/bin/pip check
-.venv-checkers/bin/python -m unittest discover -v
-MATH_CHECKER_PYTHON="$PWD/.venv-checkers/bin/python" \
-  .venv-checkers/bin/python -m unittest tests.test_official_checkers -v
-```
-
-默认测试覆盖统一 schema、紧凑 JSONL 结果落盘、顺序分批续跑、experiment 冲突
-检测、正式 CLI 的本地 OpenAI-compatible 5×5 执行链、基础方法公平预算、插件
-扩展契约、四个静态数据集的实际样本数，以及 GSM1K/U-MATH 的评分行为。设置
-`MATH_CHECKER_PYTHON` 后额外运行三个原生 checker 的集成测试。
-
-## 验证源码版本
-
-脚本只依赖 Python 3.11+ 标准库：
+外部仓库来源和固定版本记录在 `manifests/repositories.toml`。可使用以下命令检查
+工作区是否完整：
 
 ```bash
 python3 scripts/verify_workspace.py
 ```
 
-数据仓库的路径与分支、论文方法的固定版本、官方地址、许可、入口和额外依赖记录在
-`manifests/repositories.toml`。数据仓库允许独立演进；每次实验会把其实际 commit
-写入 `experiment.json`，而不是在 runner 中硬编码数据 HEAD。每种方法的运行配置
-位于 `configs/methods/`。
+## 安装
 
-## 仓库约定
+需要 Python 3.11+：
 
-- 对官方方法的修改放在各方法仓库的 `benchmark-integration` 分支。
-- 官方 remote 使用 `upstream`；以后将个人 fork 添加为 `origin`。
-- 本仓库只跟踪 adapter、实验配置和测试；正式实验产物不进入 Git。
-- 完整实验产物放入 `results/experiments/`，该目录默认不进入 Git。
-- 所有实验必须同时记录 data、runner、method 和 model revision。
+```bash
+python3 -m venv .venv-checkers
+.venv-checkers/bin/pip install -r requirements/experiment-lock.txt
+.venv-checkers/bin/pip install -e . --no-deps
+cp .env.example .env
+```
 
-## 安全提示
+在 `.env` 中配置所用模型对应的 API key。程序只从环境变量读取凭据，`.env` 不会
+进入 Git。
 
-PAL 以及 Self-Refine 的 GSM1K profile 会执行模型生成的 Python 程序；Self-Refine
-在 MATH-Perturb、HARP 和 U-MATH 上使用文本 refinement。程序执行使用受限 AST、
-独立子进程和资源上限，不在 runner 主进程执行。面对不受信任模型的正式实验，仍
-建议将 worker 再放入无网络容器或 microVM。
+## 运行实验矩阵
+
+```bash
+./scripts/run_experiments.sh \
+  --methods direct,pal,self_refine \
+  --datasets gsm1k,math-perturb,harp-small,u-math-text-only \
+  --repeats 3 \
+  --batch-size all \
+  --concurrency 4 \
+  --temperature 0.7 \
+  --seed 42 \
+  --seed-mode increment
+```
+
+`--methods` 和 `--datasets` 可指定单项、逗号分隔列表或 `all`。`--batch-size N` 每次
+顺序处理接下来的 N 条未完成样本，`--batch-size all` 处理全部剩余样本。
+`--concurrency` 只改变并发调度，不改变实验身份。完整参数可直接查看：
+
+```bash
+./scripts/run_experiments.sh --help
+```
+
+各运行脚本的完整参数和记录说明见
+[`docs/running_experiments.md`](docs/running_experiments.md)。
+
+## 运行 AFlow
+
+AFlow 搜索只使用对应数据集的固定 validation split，生成冻结 workflow 后再运行
+test split。
+
+```bash
+# 搜索 workflow
+./scripts/run_aflow.sh \
+  --mode search \
+  --dataset gsm1k \
+  --model qwen35_flash \
+  --optimizer-model qwen35_flash \
+  --search-rounds 3 \
+  --validation-size all
+
+# 使用搜索产物测试
+./scripts/run_aflow.sh \
+  --mode test \
+  --dataset gsm1k \
+  --model qwen35_flash \
+  --workflow <path-to-workflow.json> \
+  --batch-size all \
+  --repeats 3
+```
+
+## 评估 U-MATH judge
+
+`run_mu_math.sh` 用官方 µ-MATH 数据比较候选 judge，不运行论文方法，也不会覆盖正式
+U-MATH judge lock。
+
+```bash
+./scripts/run_mu_math.sh \
+  --judge qwen37_flash \
+  --batch-size all \
+  --concurrency 4
+```
+
+内置候选包括 `qwen35_flash`、`qwen37_flash`、`gemini36_flash`、
+`deepseek_v4_pro` 和 `deepseek_v4_flash`。
+
+## 产物与续跑
+
+新实验按模型和方法分层保存：
+
+```text
+results/experiments/<model>/<method>/
+└── <dataset>__rNNN__<tag>__<UTC-time>__<fingerprint>/
+    ├── experiment.json
+    ├── records.jsonl
+    ├── api_calls.jsonl
+    ├── errors.jsonl
+    └── summary.json
+```
+
+脚本通过 manifest 中的实验配置识别同一次实验，通过 `records.jsonl` 中的 problem ID
+判断已完成样本。保持模型、方法、数据、repeat、seed、推理参数和 `run-tag` 不变即可
+续跑；`batch-size` 和 `concurrency` 可以调整。结果目录不进入 Git。
+
+## 测试
+
+```bash
+.venv-checkers/bin/pip check
+.venv-checkers/bin/python -m unittest discover -v
+
+MATH_CHECKER_PYTHON="$PWD/.venv-checkers/bin/python" \
+  .venv-checkers/bin/python -m unittest tests.test_official_checkers -v
+
+.venv-checkers/bin/python scripts/run_smoke_matrix.py
+```
+
+Smoke matrix 使用确定性 backend，不代表模型性能，但会实际执行方法适配、程序执行器
+和官方 checker。
+
+## 安全边界
+
+PAL 和部分 Self-Refine 链路会执行模型生成的 Python。生成代码经过 AST 限制，并在
+设置资源上限的独立子进程中运行；它不是面向任意不可信代码的完整安全沙箱。处理
+不可信模型输出时，建议额外使用无网络容器或 microVM 隔离 worker。

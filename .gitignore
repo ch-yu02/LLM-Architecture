@@ -4,7 +4,9 @@ __pycache__/
 *.egg-info/
 .env
 .DS_Store
-docs/
+
+docs/*
+!docs/running_experiments.md
 
 results/raw/
 results/smoke/
