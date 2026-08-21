@@ -237,6 +237,7 @@ def python_environment_state(python: Path) -> dict[str, Any]:
 
     distributions = (
         "antlr4-python3-runtime",
+        "lark",
         "loguru",
         "numpy",
         "openai",
@@ -355,6 +356,9 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 def summarize_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     items = list(records)
     scored = [item for item in items if item["score"]["status"] == "scored"]
+    method_failed = [
+        item for item in items if item["score"]["status"] == "method_failed"
+    ]
     correct = sum(bool(item["score"].get("correct")) for item in scored)
     errors = sum(item["score"]["status"] == "error" for item in items)
     processing = [
@@ -375,9 +379,14 @@ def summarize_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return {
         "records": len(items),
         "scored": len(scored),
+        "method_failed": len(method_failed),
         "correct": correct,
         "errors": errors,
-        "accuracy": correct / len(scored) if scored else None,
+        "accuracy": (
+            correct / (len(scored) + len(method_failed))
+            if scored or method_failed
+            else None
+        ),
         "usage": usage,
         "processing_seconds": {
             "total": sum(processing),

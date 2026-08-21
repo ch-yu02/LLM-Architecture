@@ -174,16 +174,22 @@ class ExperimentArtifactTests(unittest.TestCase):
                 },
             },
             {
+                "score": {"status": "method_failed", "correct": False},
+                "generation": {"usage": {"total_tokens": 3}},
+                "timing": {"processing_seconds": 0.5},
+            },
+            {
                 "score": {"status": "error", "correct": None},
                 "generation": None,
                 "timing": {"processing_seconds": 1.0},
             },
         ]
         summary = summarize_records(records)
-        self.assertEqual(summary["records"], 2)
-        self.assertEqual(summary["accuracy"], 1.0)
+        self.assertEqual(summary["records"], 3)
+        self.assertEqual(summary["method_failed"], 1)
+        self.assertEqual(summary["accuracy"], 0.5)
         self.assertEqual(summary["errors"], 1)
-        self.assertEqual(summary["usage"]["total_tokens"], 7)
+        self.assertEqual(summary["usage"]["total_tokens"], 10)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "api_calls.jsonl"
             path.write_text(

@@ -225,6 +225,8 @@ results/experiments/
 
 每个实验单元目录内包含 `experiment.json`、`records.jsonl`、
 `api_calls.jsonl`、`errors.jsonl`（发生错误时）和 `summary.json`。
+`method_failed` 表示方法已完成模型调用但未产生可评分结果，按错误答案计入准确率并继续；
+API、执行环境或评分器错误不写入当前样本，运行立即停止，修复后可续跑。
 
 ## AFlow：`run_aflow.sh`
 

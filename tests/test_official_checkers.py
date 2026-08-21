@@ -4,7 +4,7 @@ import os
 import unittest
 from pathlib import Path
 
-from benchmark_core.schema import Generation
+from benchmark_core.schema import Generation, Problem
 from benchmark_datasets import get_dataset
 from benchmark_datasets.base import DatasetContext
 
@@ -50,6 +50,31 @@ class OfficialCheckerTests(unittest.TestCase):
                 Generation(r"Answer: \boxed{10}", finish_reason="length"),
             ).correct
         )
+
+    def test_math_perturb_symbolic_equivalence(self):
+        plugin = get_dataset("math-perturb")
+        scorer = plugin.create_scorer(self.context())
+        fraction = scorer.score(
+            Problem(
+                "math-perturb",
+                "synthetic-fraction",
+                "Compute one quarter.",
+                "0.25",
+            ),
+            Generation(r"\boxed{\frac{1}{4}}"),
+        )
+        symbolic = scorer.score(
+            Problem(
+                "math-perturb",
+                "synthetic-symbolic",
+                "Simplify.",
+                r"12+12\sqrt{2}",
+            ),
+            Generation(r"\boxed{12 + 12\sqrt{2}}"),
+        )
+
+        self.assertTrue(fraction.correct)
+        self.assertTrue(symbolic.correct)
 
     def test_harp(self):
         plugin = get_dataset("harp")

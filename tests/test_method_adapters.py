@@ -8,6 +8,7 @@ from adapters import AFlowAdapter, PALAdapter, SelfRefineAdapter
 from adapters.aflow import workflow_call_bounds
 from adapters.pal import format_final_answer
 from benchmark_core.fairness import FairnessPolicy
+from benchmark_core.interfaces import MethodOutcomeError
 from benchmark_core.runner import EvaluationRunner, SampleEvaluationError
 from benchmark_core.schema import Experiment, Generation, Problem
 from benchmark_core.store import JsonlResultStore
@@ -323,10 +324,19 @@ class MethodAdapterTests(unittest.TestCase):
     def test_self_refine_end_to_end_and_usage_aggregation(self):
         backend = QueueBackend(
             [
-                "def solution():\n    return 1",
-                (
-                    "The arithmetic is wrong. Here is the rewrite:\n\n"
-                    "def solution():\n    return 2\n### END ###"
+                Generation(
+                    "def solution():\n    return 1",
+                    finish_reason="length",
+                    usage={"input_tokens": 10, "output_tokens": 5},
+                ),
+                Generation(
+                    (
+                        "The arithmetic is wrong.\n"
+                        "# VERDICT: INCORRECT\n"
+                        "def solution():\n    return 2\n### END ###"
+                    ),
+                    finish_reason="stop",
+                    usage={"input_tokens": 10, "output_tokens": 5},
                 ),
             ]
         )
@@ -335,12 +345,24 @@ class MethodAdapterTests(unittest.TestCase):
             backend,
             method_config={
                 "max_refinements": 1,
-                "feedback_inference_overrides": {"temperature": 0.7},
+                "gsm_initial_inference_overrides": {
+                    "max_output_tokens": 1024,
+                    "stop": ["\n\n"],
+                },
+                "gsm_feedback_inference_overrides": {
+                    "temperature": 0.7,
+                    "max_output_tokens": 2048,
+                    "stop": ["### END"],
+                },
             },
             policy=FairnessPolicy(
                 min_model_calls_per_problem=2,
                 max_model_calls_per_problem=2,
-                allowed_inference_overrides=("temperature",),
+                allowed_inference_overrides=(
+                    "temperature",
+                    "max_output_tokens",
+                    "stop",
+                ),
             ),
         )
         self.assertEqual((summary.scored, summary.correct), (1, 1))
@@ -350,7 +372,21 @@ class MethodAdapterTests(unittest.TestCase):
             record["generation"]["method_details"]["refinement_iterations"],
             1,
         )
+        self.assertEqual(
+            backend.calls[0]["config"],
+            {"max_output_tokens": 1024, "stop": ["\n\n"]},
+        )
         self.assertEqual(backend.calls[1]["config"]["temperature"], 0.7)
+        self.assertEqual(backend.calls[1]["config"]["max_output_tokens"], 2048)
+        self.assertEqual(backend.calls[1]["config"]["stop"], ["### END"])
+        feedback_prompt = backend.calls[1]["messages"][0]["content"]
+        self.assertEqual(feedback_prompt.count("# VERDICT: CORRECT"), 2)
+        self.assertEqual(feedback_prompt.count("# VERDICT: INCORRECT"), 4)
+        self.assertIn(
+            "If no error is found, output # VERDICT: CORRECT and do not "
+            "rewrite the program.",
+            feedback_prompt,
+        )
 
     def test_self_refine_uses_text_refinement_outside_gsm(self):
         backend = QueueBackend(
@@ -376,7 +412,7 @@ class MethodAdapterTests(unittest.TestCase):
             backend,
             config={
                 "max_refinements": 1,
-                "feedback_inference_overrides": {"temperature": 0.7},
+                "text_feedback_inference_overrides": {"temperature": 0.7},
             },
         )
 
@@ -388,6 +424,17 @@ class MethodAdapterTests(unittest.TestCase):
         for call in backend.calls:
             self.assertIn(r"Put the final answer in `\boxed{...}`.", call["messages"][0]["content"])
             self.assertNotIn("solution using Python", call["messages"][0]["content"])
+
+    def test_self_refine_accepts_complete_text_with_imperfect_closing_tags(self):
+        status, feedback, revised = SelfRefineAdapter._split_text_refinement(
+            "<status>incorrect</status>\n"
+            "<feedback>Fix the calculation.</wrong_tag>\n"
+            "<revised_solution>Reasoning. \\boxed{2}"
+        )
+
+        self.assertEqual(status, "incorrect")
+        self.assertEqual(feedback, "Fix the calculation.")
+        self.assertEqual(revised, r"Reasoning. \boxed{2}")
 
     def test_self_refine_method_failures_are_scored_incorrect_and_continue(self):
         backend = QueueBackend(
@@ -418,7 +465,9 @@ class MethodAdapterTests(unittest.TestCase):
                 store=store,
                 method_config={
                     "max_refinements": 1,
-                    "feedback_inference_overrides": {"temperature": 0.7},
+                    "text_feedback_inference_overrides": {
+                        "temperature": 0.7
+                    },
                 },
                 fairness_policy=FairnessPolicy(
                     min_model_calls_per_problem=2,
@@ -428,19 +477,355 @@ class MethodAdapterTests(unittest.TestCase):
             )
             records = list(store.read())
 
-        self.assertEqual((summary.scored, summary.correct), (2, 1))
-        self.assertEqual(records[0]["generation"]["text"], "")
+        self.assertEqual(
+            (summary.scored, summary.method_failed, summary.correct),
+            (1, 1, 1),
+        )
+        self.assertEqual(
+            records[0]["generation"]["text"], "malformed refinement"
+        )
+        self.assertEqual(records[0]["score"]["status"], "method_failed")
+        self.assertFalse(records[0]["score"]["correct"])
         failure = records[0]["generation"]["method_details"]["method_failure"]
         self.assertEqual(failure["stage"], "feedback_parse")
         self.assertEqual(failure["exception_type"], "ValueError")
         self.assertTrue(records[1]["score"]["correct"])
+
+    def test_self_refine_truncated_text_is_method_failure(self):
+        backend = QueueBackend(
+            [
+                "First candidate",
+                Generation(
+                    "<status>incorrect</status>\n"
+                    "<feedback>Incomplete",
+                    finish_reason="length",
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlResultStore(Path(directory) / "results.jsonl")
+            summary = EvaluationRunner().run(
+                experiment=Experiment(
+                    "exp-self-refine-truncated",
+                    "math-perturb",
+                    "self_refine",
+                    "fake-model",
+                ),
+                plugin=TwoTextProblemPlugin(),
+                context=DatasetContext(Path(directory)),
+                method=SelfRefineAdapter(self.self_refine_source),
+                backend=backend,
+                store=store,
+                method_config={
+                    "max_refinements": 1,
+                    "text_feedback_inference_overrides": {
+                        "temperature": 0.7
+                    },
+                },
+                fairness_policy=FairnessPolicy(
+                    min_model_calls_per_problem=2,
+                    max_model_calls_per_problem=2,
+                    allowed_inference_overrides=("temperature",),
+                ),
+                batch_size=1,
+            )
+            record = next(store.read())
+
+        self.assertEqual((summary.scored, summary.method_failed), (0, 1))
+        self.assertEqual(record["score"]["status"], "method_failed")
+        self.assertEqual(
+            record["score"]["details"]["failure_stage"],
+            "feedback_generation",
+        )
+
+    def test_self_refine_truncated_initial_text_is_revised(self):
+        backend = QueueBackend(
+            [
+                Generation(
+                    "An unfinished candidate solution...",
+                    finish_reason="length",
+                ),
+                (
+                    "<status>incorrect</status>\n"
+                    "<feedback>The candidate was truncated.</feedback>\n"
+                    "<revised_solution>Complete reasoning. "
+                    "\\boxed{2}</revised_solution>"
+                ),
+            ]
+        )
+        problem = Problem(
+            "math-perturb",
+            "one",
+            "What is 1+1?",
+            "2",
+            answer_instruction="Put the final answer in `\\boxed{...}`.",
+        )
+
+        result = SelfRefineAdapter(self.self_refine_source).run(
+            problem,
+            backend,
+            config={
+                "max_refinements": 1,
+                "text_feedback_inference_overrides": {"temperature": 0.7},
+            },
+        )
+
+        self.assertEqual(result.text, r"Complete reasoning. \boxed{2}")
+        self.assertEqual(len(backend.calls), 2)
+        self.assertIn(
+            "Treat it as an incomplete draft and reconstruct a complete",
+            backend.calls[1]["messages"][0]["content"],
+        )
+
+    def test_self_refine_filtered_initial_text_is_method_failure(self):
+        backend = QueueBackend(
+            [
+                Generation(
+                    "Blocked candidate",
+                    finish_reason="content_filter",
+                )
+            ]
+        )
+        problem = Problem(
+            "math-perturb",
+            "one",
+            "What is 1+1?",
+            "2",
+            answer_instruction="Put the final answer in `\\boxed{...}`.",
+        )
+
+        with self.assertRaises(MethodOutcomeError) as caught:
+            SelfRefineAdapter(self.self_refine_source).run(
+                problem,
+                backend,
+                config={
+                    "max_refinements": 1,
+                    "text_feedback_inference_overrides": {
+                        "temperature": 0.7
+                    },
+                },
+            )
+
+        self.assertEqual(caught.exception.stage, "initial_generation")
+        self.assertEqual(len(backend.calls), 1)
+
+    def test_self_refine_gsm_token_limit_without_rewrite_keeps_input(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                Generation(
+                    "The calculations look good; I cannot identify an error.",
+                    finish_reason="length",
+                ),
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.correct), (1, 1))
+        self.assertEqual(record["generation"]["text"], r"Answer: \boxed{2}")
+        self.assertEqual(
+            record["generation"]["method_details"][
+                "refinement_termination"
+            ],
+            "assumed_correct_after_feedback_token_limit",
+        )
+
+    def test_self_refine_gsm_correct_verdict_keeps_input(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                "There is no error in the code.\n# VERDICT: CORRECT",
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.correct), (1, 1))
+        self.assertEqual(
+            record["generation"]["method_details"][
+                "refinement_termination"
+            ],
+            "feedback_declared_correct",
+        )
+
+    def test_self_refine_gsm_token_limit_with_correct_verdict_keeps_input(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                Generation(
+                    "There is no error.\n# VERDICT: CORRECT",
+                    finish_reason="length",
+                ),
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.correct), (1, 1))
+        self.assertEqual(
+            record["generation"]["method_details"][
+                "refinement_termination"
+            ],
+            "feedback_declared_correct",
+        )
+
+    def test_self_refine_gsm_other_feedback_finish_reason_fails(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                Generation(
+                    "# VERDICT: CORRECT",
+                    finish_reason="content_filter",
+                ),
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.method_failed), (0, 1))
+        self.assertEqual(
+            record["score"]["details"]["failure_stage"],
+            "feedback_generation",
+        )
+
+    def test_self_refine_gsm_stop_without_judgment_or_rewrite_fails(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                "I am still reviewing the calculations.",
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.method_failed), (0, 1))
+        self.assertEqual(record["score"]["status"], "method_failed")
+        self.assertEqual(
+            record["score"]["details"]["failure_stage"],
+            "feedback_parse",
+        )
+
+    def test_self_refine_gsm_token_limit_after_incorrect_verdict_fails(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                Generation(
+                    "The arithmetic is wrong.\n# VERDICT: INCORRECT",
+                    finish_reason="length",
+                ),
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.method_failed), (0, 1))
+        self.assertEqual(record["score"]["status"], "method_failed")
+        self.assertEqual(
+            record["score"]["details"]["failure_stage"],
+            "feedback_generation",
+        )
+
+    def test_self_refine_gsm_stop_incorrect_verdict_requires_rewrite(self):
+        backend = QueueBackend(
+            [
+                "def solution():\n    return 2",
+                "The arithmetic is wrong.\n# VERDICT: INCORRECT",
+            ]
+        )
+        summary, record = self.run_method(
+            SelfRefineAdapter(self.self_refine_source),
+            backend,
+            method_config={
+                "max_refinements": 1,
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
+            },
+            policy=FairnessPolicy(
+                min_model_calls_per_problem=2,
+                max_model_calls_per_problem=2,
+                allowed_inference_overrides=("temperature",),
+            ),
+        )
+
+        self.assertEqual((summary.scored, summary.method_failed), (0, 1))
+        self.assertEqual(
+            record["score"]["details"]["failure_stage"],
+            "feedback_parse",
+        )
 
     def test_self_refine_invalid_final_program_is_scored_incorrect(self):
         backend = QueueBackend(
             [
                 "def solution():\n    return missing_name",
                 (
-                    "The implementation is correct.\n\n"
+                    "The implementation has an unresolved name.\n"
+                    "# VERDICT: INCORRECT\n"
                     "def solution():\n    return missing_name\n### END ###"
                 ),
             ]
@@ -450,7 +835,7 @@ class MethodAdapterTests(unittest.TestCase):
             backend,
             method_config={
                 "max_refinements": 1,
-                "feedback_inference_overrides": {"temperature": 0.7},
+                "gsm_feedback_inference_overrides": {"temperature": 0.7},
             },
             policy=FairnessPolicy(
                 min_model_calls_per_problem=2,
@@ -458,8 +843,12 @@ class MethodAdapterTests(unittest.TestCase):
                 allowed_inference_overrides=("temperature",),
             ),
         )
-        self.assertEqual((summary.scored, summary.correct), (1, 0))
-        self.assertEqual(record["generation"]["text"], "")
+        self.assertEqual(
+            (summary.scored, summary.method_failed, summary.correct),
+            (0, 1, 0),
+        )
+        self.assertEqual(record["score"]["status"], "method_failed")
+        self.assertIn("missing_name", record["generation"]["text"])
         details = record["generation"]["method_details"]
         self.assertEqual(
             details["method_failure"]["stage"], "program_execution"

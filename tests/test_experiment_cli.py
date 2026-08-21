@@ -148,6 +148,29 @@ class ExperimentCliTests(unittest.TestCase):
         )
         self.assertEqual(_dataset_selection("harp-small"), ["harp-small"])
 
+    def test_lark_version_only_identifies_math_perturb_runs(self):
+        without_lark = {
+            "dataset": "gsm1k",
+            "environment": {"packages": {"sympy": "1.14.0"}},
+        }
+        with_lark = {
+            "dataset": "gsm1k",
+            "environment": {
+                "packages": {"sympy": "1.14.0", "lark": "1.2.2"}
+            },
+        }
+        self.assertEqual(
+            _experiment_identity(without_lark),
+            _experiment_identity(with_lark),
+        )
+
+        without_lark["dataset"] = "math-perturb"
+        with_lark["dataset"] = "math-perturb"
+        self.assertNotEqual(
+            _experiment_identity(without_lark),
+            _experiment_identity(with_lark),
+        )
+
     def test_local_api_run_resumes_and_separates_changed_config(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -321,6 +344,10 @@ class OpenAI:
             self.assertEqual(
                 manifest["configuration"]["environment"]["packages"]["openai"],
                 "2.49.0",
+            )
+            self.assertEqual(
+                manifest["configuration"]["environment"]["packages"]["lark"],
+                "1.2.2",
             )
             self.assertEqual(
                 manifest["configuration"]["inference_config"]["seed"],

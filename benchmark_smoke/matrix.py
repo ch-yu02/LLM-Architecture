@@ -12,6 +12,9 @@ from benchmark_core.schema import Experiment, Generation, Problem
 from benchmark_core.store import JsonlResultStore
 from benchmark_datasets import get_dataset
 from benchmark_datasets.base import DatasetContext, DatasetPlugin
+from benchmark_experiments.checker_preflight import (
+    validate_checker_capabilities,
+)
 from benchmark_methods import (
     load_method_config,
     method_run_settings,
@@ -73,10 +76,7 @@ class CannedSmokeBackend:
             else:
                 self.responses = [
                     program,
-                    (
-                        "There is no error in the code. It is correct.\n\n"
-                        f"{program}\n### END ###"
-                    ),
+                    "There is no error in the code.\n# VERDICT: CORRECT",
                 ]
         elif method == "pal":
             self.responses = [f"```python\n{program}\n```"]
@@ -196,6 +196,7 @@ class SmokeMatrixRunner:
             bridge_python={
                 "math-perturb": self.checker_python,
                 "harp": self.checker_python,
+                "harp-small": self.checker_python,
                 "mathconstruct": self.checker_python,
             },
             judge=ReferenceContainmentSmokeJudge(),
@@ -236,6 +237,11 @@ class SmokeMatrixRunner:
 
     def run(self, matrix_path: Path) -> dict[str, Any]:
         matrix = self.load_matrix(matrix_path)
+        validate_checker_capabilities(
+            self.checker_python,
+            self.data_root,
+            (item["name"] for item in matrix["datasets"]),
+        )
         context = self._context()
         plugins = self._selected_plugins(matrix, context)
         methods = self._load_methods(matrix["methods"])
@@ -284,6 +290,7 @@ class SmokeMatrixRunner:
                         summary.attempted == 1
                         and summary.scored == 1
                         and summary.correct == 1
+                        and summary.method_failed == 0
                         and summary.errors == 0
                     )
                     cells.append(

@@ -108,8 +108,16 @@ class ControlledModelBackend:
         self._generations.append(generation)
         return generation
 
-    def finalize(self, generation: Generation) -> Generation:
-        if self.model_calls < self.policy.min_model_calls_per_problem:
+    def finalize(
+        self,
+        generation: Generation,
+        *,
+        enforce_minimum_calls: bool = True,
+    ) -> Generation:
+        if (
+            enforce_minimum_calls
+            and self.model_calls < self.policy.min_model_calls_per_problem
+        ):
             raise FairnessViolation(
                 "Method used fewer than min_model_calls_per_problem="
                 f"{self.policy.min_model_calls_per_problem}"

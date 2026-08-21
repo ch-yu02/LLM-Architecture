@@ -10,6 +10,7 @@ JsonObject = dict[str, Any]
 
 class ScoreStatus(StrEnum):
     SCORED = "scored"
+    METHOD_FAILED = "method_failed"
     ERROR = "error"
     SKIPPED = "skipped"
 
@@ -61,6 +62,20 @@ class Score:
     @classmethod
     def failed(cls, error: str, *, details: JsonObject | None = None) -> "Score":
         return cls(status=ScoreStatus.ERROR, error=error, details=details or {})
+
+    @classmethod
+    def method_failed(
+        cls,
+        reason: str,
+        *,
+        details: JsonObject | None = None,
+    ) -> "Score":
+        return cls(
+            status=ScoreStatus.METHOD_FAILED,
+            correct=False,
+            value=0.0,
+            details={"reason": reason, **(details or {})},
+        )
 
 
 @dataclass(frozen=True)

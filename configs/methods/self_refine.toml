@@ -13,13 +13,22 @@ external_dependency = "replaced_by_shared_model_backend"
 [method]
 max_refinements = 4
 
-[method.feedback_inference_overrides]
+[method.gsm_initial_inference_overrides]
+max_output_tokens = 1024
+stop = ["\n\n"]
+
+[method.gsm_feedback_inference_overrides]
+temperature = 0.7
+max_output_tokens = 2048
+stop = ["### END"]
+
+[method.text_feedback_inference_overrides]
 temperature = 0.7
 
 [fairness]
 min_model_calls_per_problem = 2
 max_model_calls_per_problem = 5
-allowed_inference_overrides = ["temperature"]
+allowed_inference_overrides = ["temperature", "max_output_tokens", "stop"]
 
 [security]
 executor = "executors.RestrictedPythonExecutor"

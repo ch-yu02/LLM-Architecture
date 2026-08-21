@@ -51,6 +51,9 @@ from benchmark_experiments.artifacts import (  # noqa: E402
     summarize_records,
     timestamped_experiment_directory,
 )
+from benchmark_experiments.checker_preflight import (  # noqa: E402
+    validate_checker_capabilities,
+)
 from benchmark_methods import load_method_config, method_run_settings  # noqa: E402
 from model_backends import (  # noqa: E402
     ModelConfigurationError,
@@ -182,6 +185,12 @@ def _git_artifact_ids(
 
 def _configuration_identity(configuration: dict[str, Any]) -> dict[str, Any]:
     identity = json.loads(json.dumps(configuration, ensure_ascii=False))
+    if identity.get("dataset") != "math-perturb":
+        environment = identity.get("environment")
+        if isinstance(environment, dict):
+            packages = environment.get("packages")
+            if isinstance(packages, dict):
+                packages.pop("lark", None)
     identity.pop("audit_revisions", None)
     return identity
 
@@ -1137,6 +1146,11 @@ def main() -> int:
         if not checker.is_file():
             raise ValueError(f"Checker Python not found: {checker}")
         environment_state = python_environment_state(checker)
+        validate_checker_capabilities(
+            checker,
+            args.data_root.resolve(),
+            (args.dataset,),
+        )
         data_state = clean_git_repository_state(args.data_root.resolve())
         method_state = _method_source_state()
         method, default_method_config = _load_aflow_method()

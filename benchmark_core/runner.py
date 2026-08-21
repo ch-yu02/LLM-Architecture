@@ -13,7 +13,7 @@ from .fairness import (
     FairnessPolicy,
     evaluation_control_metadata,
 )
-from .interfaces import EvaluationMethod, ModelBackend
+from .interfaces import EvaluationMethod, MethodOutcomeError, ModelBackend
 from .schema import EvaluationRecord, Experiment, Generation, Problem, Score
 from .store import JsonlResultStore
 
@@ -24,11 +24,13 @@ class RunSummary:
     resumed: int
     scored: int
     correct: int
+    method_failed: int
     errors: int
 
     @property
     def accuracy(self) -> float | None:
-        return self.correct / self.scored if self.scored else None
+        evaluated = self.scored + self.method_failed
+        return self.correct / evaluated if evaluated else None
 
 
 class SampleEvaluationError(RuntimeError):
@@ -133,7 +135,21 @@ class EvaluationRunner:
             scoring_started = time.perf_counter()
             score = scorer.score(problem, generation)
             scoring_seconds = time.perf_counter() - scoring_started
-        except Exception as exc:  # one bad sample must not abort a long run
+        except MethodOutcomeError as exc:
+            generation = exc.generation
+            if controlled_backend is not None:
+                generation = controlled_backend.finalize(
+                    generation,
+                    enforce_minimum_calls=False,
+                )
+            score = Score.method_failed(
+                exc.reason,
+                details={
+                    "failure_stage": exc.stage,
+                    **exc.details,
+                },
+            )
+        except Exception as exc:
             details = {
                 "failure_stage": failure_stage,
                 "exception_type": type(exc).__name__,
@@ -181,7 +197,7 @@ class EvaluationRunner:
     ) -> RunSummary:
         completed = store.completed_problem_ids(experiment)
         scorer = plugin.create_scorer(context)
-        resumed = scored = correct = errors = 0
+        resumed = scored = correct = method_failed = errors = 0
         selected = []
         for problem in plugin.iter_problems(context):
             if problem.id in completed:
@@ -213,6 +229,8 @@ class EvaluationRunner:
             if record.score.status.value == "scored":
                 scored += 1
                 correct += int(bool(record.score.correct))
+            elif record.score.status.value == "method_failed":
+                method_failed += 1
             elif record.score.status.value == "error":
                 if record_callback is not None:
                     record_callback(record)
@@ -221,4 +239,11 @@ class EvaluationRunner:
             if record_callback is not None:
                 record_callback(record)
 
-        return RunSummary(len(selected), resumed, scored, correct, errors)
+        return RunSummary(
+            len(selected),
+            resumed,
+            scored,
+            correct,
+            method_failed,
+            errors,
+        )

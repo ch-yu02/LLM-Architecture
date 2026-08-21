@@ -47,6 +47,10 @@ from benchmark_experiments.artifacts import (  # noqa: E402
     summarize_records,
     tree_fingerprint,
 )
+from benchmark_experiments.checker_preflight import (  # noqa: E402
+    CheckerCapabilityError,
+    validate_checker_capabilities,
+)
 from benchmark_methods import (  # noqa: E402
     get_method,
     load_method_config,
@@ -110,6 +114,12 @@ def _experiment_identity(
     dataset_artifacts: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     identity = copy.deepcopy(configuration)
+    if identity.get("dataset") != "math-perturb":
+        environment = identity.get("environment")
+        if isinstance(environment, dict):
+            packages = environment.get("packages")
+            if isinstance(packages, dict):
+                packages.pop("lark", None)
     revisions = identity.get("revisions")
     if isinstance(revisions, dict):
         revisions.pop("runner_git", None)
@@ -719,6 +729,11 @@ def main() -> int:
 
     try:
         data_root = args.data_root.resolve()
+        validate_checker_capabilities(
+            checker_python,
+            data_root,
+            datasets,
+        )
         data_state = clean_git_repository_state(data_root)
         method_source_states = {}
         for name in methods:
@@ -736,7 +751,7 @@ def main() -> int:
             )
             for name in datasets
         }
-    except ExperimentArtifactError as exc:
+    except (CheckerCapabilityError, ExperimentArtifactError) as exc:
         _report_error(
             console,
             "Repository validation failed",
@@ -1007,6 +1022,7 @@ def main() -> int:
         return 2
 
     overall_failed = 0
+    overall_method_failed = 0
     matrix_started = time.perf_counter()
     result_rows: list[dict[str, Any]] = []
 
@@ -1206,6 +1222,17 @@ def main() -> int:
                                             style="dim red",
                                             markup=False,
                                         )
+                            elif record.score.status.value == "method_failed":
+                                failure_stage = record.score.details.get(
+                                    "failure_stage", "unknown"
+                                )
+                                progress.console.print(
+                                    "[yellow]METHOD FAILED[/yellow] "
+                                    f"{method_name} × {dataset_name} · "
+                                    f"problem={record.problem.id} · "
+                                    f"stage={failure_stage} · "
+                                    f"{record.score.details.get('reason', '')}"
+                                )
 
                         cell_started = time.perf_counter()
                         run_summary = EvaluationRunner().run(
@@ -1257,6 +1284,9 @@ def main() -> int:
                         progress.advance(overall_task)
                         failed = aggregate["errors"]
                         overall_failed += int(failed)
+                        overall_method_failed += int(
+                            aggregate["method_failed"]
+                        )
                         result_rows.append(
                             {
                                 "method": method_name,
@@ -1265,6 +1295,7 @@ def main() -> int:
                                 "new": run_summary.attempted,
                                 "records": aggregate["records"],
                                 "accuracy": aggregate["accuracy"],
+                                "method_failed": aggregate["method_failed"],
                                 "errors": failed,
                                 "tokens": api_summary["usage"].get(
                                     "total_tokens", 0
@@ -1315,6 +1346,7 @@ def main() -> int:
         "New",
         "Total",
         "Accuracy",
+        "Method failed",
         "Errors",
         "Tokens",
         "Time",
@@ -1332,6 +1364,7 @@ def main() -> int:
             str(row["new"]),
             str(row["records"]),
             accuracy,
+            str(row["method_failed"]),
             str(row["errors"]),
             f"{int(row['tokens']):,}",
             f"{row['seconds']:.1f}s",
@@ -1340,7 +1373,9 @@ def main() -> int:
     console.print(result_table)
     console.print(
         f"Completed in {time.perf_counter() - matrix_started:.1f}s · "
-        f"{len(result_rows)} cells · {overall_failed} sample errors"
+        f"{len(result_rows)} cells · "
+        f"{overall_method_failed} method failures · "
+        f"{overall_failed} sample errors"
     )
     console.print(f"Results root: [link={output_root}]{output_root}[/link]")
     return 1 if overall_failed else 0

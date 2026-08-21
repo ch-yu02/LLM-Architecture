@@ -12,6 +12,7 @@ from benchmark_aflow import (
     candidate_rank,
     parse_workflow_proposal,
 )
+from scripts.run_aflow import _configuration_identity
 from scripts.run_experiments import ALL_METHODS
 
 
@@ -22,6 +23,29 @@ PYTHON = ROOT / ".venv-checkers" / "bin" / "python"
 
 
 class AFlowSearchTests(unittest.TestCase):
+    def test_lark_version_only_identifies_math_perturb_runs(self):
+        base = {
+            "dataset": "harp",
+            "environment": {"packages": {"sympy": "1.14.0"}},
+        }
+        installed = {
+            "dataset": "harp",
+            "environment": {
+                "packages": {"sympy": "1.14.0", "lark": "1.2.2"}
+            },
+        }
+        self.assertEqual(
+            _configuration_identity(base),
+            _configuration_identity(installed),
+        )
+
+        base["dataset"] = "math-perturb"
+        installed["dataset"] = "math-perturb"
+        self.assertNotEqual(
+            _configuration_identity(base),
+            _configuration_identity(installed),
+        )
+
     def test_optimizer_proposal_parser_and_rank(self):
         workflow = {
             "id": "candidate",

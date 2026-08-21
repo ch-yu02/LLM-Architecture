@@ -8,6 +8,10 @@ from .artifacts import (
     timestamped_experiment_directory,
     tree_fingerprint,
 )
+from .checker_preflight import (
+    CheckerCapabilityError,
+    validate_checker_capabilities,
+)
 
 __all__ = [
     "ExperimentArtifactError",
@@ -18,4 +22,6 @@ __all__ = [
     "summarize_records",
     "timestamped_experiment_directory",
     "tree_fingerprint",
+    "CheckerCapabilityError",
+    "validate_checker_capabilities",
 ]
