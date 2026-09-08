@@ -1,16 +1,20 @@
-# 实验运行指南
+# Running experiments
 
-三个入口：
+The repository exposes three commands:
 
-| 脚本 | 用途 |
+| Command | Purpose |
 | --- | --- |
-| `scripts/run_experiments.sh` | 方法 × 数据集 × repeat 正式评测 |
-| `scripts/run_aflow.sh` | 在 validation 搜索 AFlow workflow，或用冻结 workflow 测试 |
-| `scripts/run_mu_math.sh` | 在 µ-MATH 上评估候选 U-MATH judge |
+| `scripts/run_experiments.sh` | evaluate the standard method × dataset × repeat matrix |
+| `scripts/run_aflow.sh` | search for an AFlow workflow on validation data, or test a frozen workflow |
+| `scripts/run_mu_math.sh` | compare candidate U-MATH judges on µ-MATH |
 
-以下命令均在 `benchmark-runner` 根目录执行。
+Run all commands from the repository root. In multiline shell examples, each
+backslash must be the final character on its line.
 
-## 环境配置
+## Environment
+
+Create the dedicated Python 3.11+ environment and install the pinned experiment
+dependencies:
 
 ```bash
 python3 -m venv .venv-checkers
@@ -19,17 +23,19 @@ python3 -m venv .venv-checkers
 cp .env.example .env
 ```
 
-在 `.env` 中填写：
+Set the keys needed by the profiles you plan to use:
 
 ```dotenv
-DASHSCOPE_API_KEY_BEIJING=你的_API_KEY
-DEEPSEEK_API_KEY=你的_API_KEY
-GEMINI_API_KEY=你的_API_KEY
+DASHSCOPE_API_KEY_BEIJING=
+DEEPSEEK_API_KEY=
+GEMINI_API_KEY=
 ```
 
-只需填写本次所选 profile 对应的 key。
+Do not commit `.env`. The runner reads credentials from environment variables
+and does not copy them into public experiment manifests.
 
-运行前检查：
+Before a long run, verify the Python environment, external repositories, data,
+and checker integration:
 
 ```bash
 .venv-checkers/bin/pip check
@@ -39,151 +45,147 @@ MATH_CHECKER_PYTHON="$PWD/.venv-checkers/bin/python" \
   .venv-checkers/bin/python -m unittest discover -v
 ```
 
-## 共享参数语义
+## Batches, resume, and concurrency
 
-### 分批与续跑
-
-`--batch-size N` 每次处理接下来的 N 条未完成样本；`all` 处理全部剩余样本。
+`--batch-size N` processes the next `N` unfinished examples in each experiment
+cell. `--batch-size all` processes all remaining examples. A cell is one method,
+dataset, and repeat combination.
 
 ```bash
 --batch-size 100
 --batch-size all
 ```
 
-相同实验设置再次运行时，脚本根据 `records.jsonl` 跳过已完成样本。遇到样本
-error 时立即停止，错误诊断写入 `errors.jsonl`，但失败样本不写入
-`records.jsonl`。人工修复后执行相同命令，会从该样本继续。
+On a resumed run, the script locates an experiment with the same stable identity
+and reads its `records.jsonl`. Problem IDs already present are skipped. The
+confirmation screen reports only the maximum number of new samples.
 
-正式实验按模型、推理参数、method 设置、dataset/split、答案协议、环境、相关数据
-文件及官方 checker 源码判断是否续跑；µ-MATH 还固定 judge profile 和评分协议。
-runner 提交版本仍写入 manifest 留档，但无关代码提交、文档修改、增加其他模型配置
-或数据仓库中无关文件的更新不会切断已有进度。确认页的 `Max new samples` 已扣除每个
-cell 中完成的样本。
+The identity includes the model and inference settings, method configuration,
+dataset and split, repeat, seed, answer protocol, relevant dataset and checker
+files, judge configuration where applicable, run tag, and the relevant Python
+environment. Runner revisions remain in the manifest for audit, but an unrelated
+documentation commit does not invalidate existing progress.
 
-### 并发
+The following options control execution but do not change experiment identity:
 
-`--concurrency N` 设置单个实验单元内的并发样本数，默认 `1`。
+- `--batch-size`
+- `--concurrency`
+- `--yes`
+- `--debug`
+- `--skip-preflight`
 
-- 最多只有 N 条样本在途；
-- 主线程按数据集顺序写入结果；
-- `batch-size` 和 `concurrency` 均不进入实验指纹，续跑时可以调整；
-- 通用矩阵的不同 method/dataset/repeat 单元仍顺序执行。
+`--concurrency N` allows at most `N` sample requests to be in flight within the
+current cell; the default is `1`. Cells themselves are evaluated sequentially.
+Changing concurrency between runs does not split the experiment.
 
-profile 中的 `min_request_interval_seconds` 限制同一 backend 的请求启动频率。默认
-`1.0` 表示请求启动至少间隔一秒；提高并发只会重叠响应等待。API 配额允许时可降低：
+Each model profile may also define `min_request_interval_seconds`. A value of
+`1.0` spaces request starts by at least one second even when concurrency is
+higher. Reduce it only when the provider's rate limit permits, for example:
 
 ```toml
 min_request_interval_seconds = 0.2
 ```
 
-### 实验指纹
+## Standard method matrix
 
-模型、推理参数、方法参数、数据集、repeat、run tag、judge、代码/数据 revision 和
-Python 环境进入实验指纹。改变这些设置会创建新目录，不会读取旧实验。
+### Basic commands
 
-`batch-size`、`concurrency`、`yes`、`debug` 和 `skip-preflight` 不进入指纹。
-
-## 通用评测：`run_experiments.sh`
-
-### 示例
-
-默认运行 `direct × gsm1k × repeat 1` 的下一条样本：
+With no arguments, the script runs the next unfinished `direct × gsm1k × repeat
+1` sample:
 
 ```bash
 ./scripts/run_experiments.sh
 ```
 
-查看计划，不调用 API：
+Inspect a matrix without making API calls or creating experiment artifacts:
 
 ```bash
 ./scripts/run_experiments.sh \
   --methods direct,pal,self_refine \
-  --datasets gsm1k,math-perturb,harp,mathconstruct \
+  --datasets gsm1k,math-perturb,harp-small,u-math-text-only \
   --repeats 3 \
-  --batch-size 10 \
+  --batch-size 20 \
   --concurrency 4 \
   --dry-run
 ```
 
-分批正式运行：
+Run the first 100 unfinished examples in each cell:
 
 ```bash
 ./scripts/run_experiments.sh \
   --methods pal,self_refine \
-  --datasets gsm1k,math-perturb,harp,mathconstruct \
+  --datasets gsm1k,math-perturb,harp-small,u-math-text-only \
   --repeats 3 \
   --batch-size 100 \
-  --concurrency 8
+  --concurrency 8 \
+  --temperature 0.7 \
+  --seed 42 \
+  --seed-mode increment
 ```
 
-完成单个实验的全部剩余样本：
+Rerun the same command with `--batch-size all` to finish the remaining examples.
 
-```bash
-./scripts/run_experiments.sh \
-  --methods pal \
-  --datasets gsm1k \
-  --batch-size all \
-  --concurrency 8
-```
+### Methods and datasets
 
-### 方法与数据集
-
-方法：
+`--methods` accepts:
 
 ```text
 direct, zero_shot_cot, pal, self_refine, all
 ```
 
-AFlow 不属于该矩阵，统一通过下一节的专用脚本运行。
+AFlow is not part of this matrix; use `run_aflow.sh` instead.
 
-数据集：
+`--datasets` accepts:
 
-| 名称 | test 数量 | 评分器 |
+| Name | Test examples | Evaluator |
 | --- | ---: | --- |
-| `gsm1k` | 1,205 | 数值答案 |
-| `math-perturb` | 230 | 官方 `answer_check` |
-| `harp` | 4,302 | 官方 `latex_answer_check` |
-| `harp-small` | 1,434 | HARP test 的固定分层 1/3 子集；官方 `latex_answer_check` |
-| `u-math-text-only` | 720 | 锁定的 LLM judge |
-| `mathconstruct` | 439 | 官方 `parse_and_check` |
+| `gsm1k` | 1,205 | normalized numeric answer |
+| `math-perturb` | 230 | upstream `answer_check` |
+| `harp` | 4,302 | upstream `latex_answer_check` |
+| `harp-small` | 1,434 | fixed HARP test subset; upstream `latex_answer_check` |
+| `u-math-text-only` | 720 | locked LLM judge |
+| `mathconstruct` | 439 | upstream `parse_and_check` |
 
-U-MATH judge 已固定为 `qwen3.7-flash-2026-07-15`，使用
-`configs/judges/u_math.lock.toml` 指向的固定 profile。它不接受命令行覆盖，也不
-继承被测模型的 temperature、seed 或 repeat 设置；`--datasets all` 可以直接包含
-U-MATH。
-`--datasets all` 只包含五个完整基准，不包含 `harp-small`，避免重复评测 HARP
-子集。需要小集时显式传入 `--datasets harp-small`；HARP validation 仅供优化与
-选型，不是正式评测 dataset，不能通过该参数选择。
+`--datasets all` selects the five full benchmarks and excludes `harp-small`,
+which is a subset of HARP. Select `harp-small` explicitly when using the reduced
+test set. Validation sets cannot be selected through this command.
 
-### 参数
+The U-MATH judge is locked to `qwen3.7-flash-2026-07-15` through
+`configs/judges/u_math.lock.toml`. Its temperature, seed, and other inference
+settings do not inherit values from the model being evaluated.
 
-| 参数 | 默认值 | 含义 |
+### Options
+
+| Option | Default | Meaning |
 | --- | --- | --- |
-| `--model MODEL` | `qwen35_flash` | profile 名称、已配置 model ID 或 TOML 路径 |
-| `--model-id ID` | profile 值 | 覆盖实际 model ID |
-| `--methods LIST` | `direct` | 逗号分隔的方法或 `all` |
-| `--datasets LIST` | `gsm1k` | 逗号分隔的数据集或 `all` |
-| `--repeats N` | `1` | 每个 method × dataset 的重复次数 |
-| `--batch-size N\|all` | `1` | 每个实验单元本次新增样本数 |
-| `--concurrency N` | `1` | 每个实验单元内并发数 |
-| `--temperature X` | profile 值 | 范围 `0`–`2` |
-| `--top-p X` | profile 值 | 范围 `0`–`1` |
-| `--max-output-tokens N` | profile 值 | 单次模型调用最大输出 |
-| `--seed N` | profile 值或不发送 | 范围 `0`–`2147483647` |
-| `--seed-mode MODE` | `fixed` | `fixed` 或 `increment` |
-| `--method-param SPEC` | 无 | `METHOD.KEY=JSON_VALUE` |
-| `--method-config SPEC` | 无 | `METHOD=/path/config.json` 或 TOML |
-| `--run-tag TAG` | 空 | 新实验的可读标签，进入指纹 |
-| `--data-root PATH` | `../math-benchmark-data` | 数据仓库 |
-| `--output-root PATH` | `results/experiments` | 结果目录 |
-| `--checker-python PATH` | `.venv-checkers/bin/python` | 官方 checker 解释器 |
-| `--env-file PATH` | `.env` | 环境变量文件 |
-| `--dry-run` | 关闭 | 只检查和展示计划 |
-| `--yes` | 关闭 | 跳过确认 |
-| `--skip-preflight` | 关闭 | 跳过 API 连通性检查 |
-| `--debug` | 关闭 | 在终端打印完整 traceback |
+| `--model MODEL` | `qwen35_flash` | profile name, configured model ID, or TOML path |
+| `--model-id ID` | profile value | override the model ID while retaining the profile |
+| `--methods LIST` | `direct` | one method, a comma-separated list, or `all` |
+| `--datasets LIST` | `gsm1k` | one dataset, a comma-separated list, or `all` |
+| `--repeats N` | `1` | number of repeats for every method × dataset cell |
+| `--batch-size N\|all` | `1` | new examples to process per cell in this invocation |
+| `--concurrency N` | `1` | concurrent sample requests within a cell |
+| `--temperature X` | profile value | sampling temperature, from `0` to `2` |
+| `--top-p X` | profile value | nucleus sampling threshold, from `0` to `1` |
+| `--max-output-tokens N` | profile value | maximum output tokens per model call |
+| `--seed N` | profile value or omitted | base seed, from `0` to `2147483647` |
+| `--seed-mode MODE` | `fixed` | `fixed` or `increment` |
+| `--method-param SPEC` | none | override one method setting as `METHOD.KEY=JSON_VALUE` |
+| `--method-config SPEC` | none | load a method config as `METHOD=/path/config.toml` or JSON |
+| `--run-tag TAG` | empty | human-readable label included in experiment identity |
+| `--data-root PATH` | `../math-benchmark-data` | prepared data repository |
+| `--output-root PATH` | `results/experiments` | experiment artifact root |
+| `--checker-python PATH` | `.venv-checkers/bin/python` | interpreter used by official checker bridges |
+| `--env-file PATH` | `.env` | environment-variable file |
+| `--dry-run` | off | validate and display the plan without API calls |
+| `--yes` | off | skip the interactive confirmation |
+| `--skip-preflight` | off | bypass the initial API connectivity check |
+| `--debug` | off | print full tracebacks as well as recording diagnostics |
 
-### Seed
+Use `--skip-preflight` only when a separate connectivity check has already been
+performed. It does not disable error handling during the experiment.
+
+### Seeds and repeats
 
 ```bash
 ./scripts/run_experiments.sh \
@@ -192,27 +194,32 @@ U-MATH。
   --repeats 3 \
   --seed 1234 \
   --seed-mode increment \
-  --batch-size 100
+  --batch-size all
 ```
 
-- `fixed`：所有 repeat 使用同一 seed；
-- `increment`：第 n 个 repeat 使用 `seed + n - 1`，必须提供 base seed。
+With `fixed`, every repeat uses the same seed. With `increment`, repeat `n` uses
+`base_seed + n - 1`; a base seed is required. A provider may still introduce
+nondeterminism, so a fixed seed is not a guarantee of identical responses. If
+temperature is zero and the provider is deterministic, repeated runs with the
+same seed may offer little additional information.
 
-seed 不能保证远端服务完全确定。`temperature=0` 且服务确定时，相同 seed 的多个
-repeat 可能完全一致。
+### Method-specific settings
 
-### 方法参数
+`--method-param` can be supplied more than once. Values are parsed as JSON and
+applied after any file supplied through `--method-config`.
 
 ```bash
 ./scripts/run_experiments.sh \
   --methods self_refine \
   --datasets gsm1k \
-  --method-param self_refine.max_refinements=2
+  --method-param self_refine.max_refinements=2 \
+  --batch-size all
 ```
 
-`--method-param` 可重复，且在 `--method-config` 之后应用。方法参数进入实验指纹。
+Method settings are part of experiment identity. Changing one starts a distinct
+experiment rather than resuming an incompatible run.
 
-### 产物
+### Output files
 
 ```text
 results/experiments/
@@ -223,21 +230,33 @@ results/experiments/
         └── <dataset-b>__r001__<tag>__<UTC-time>__<fingerprint>/
 ```
 
-每个实验单元目录内包含 `experiment.json`、`records.jsonl`、
-`api_calls.jsonl`、`errors.jsonl`（发生错误时）和 `summary.json`。
-`method_failed` 表示方法已完成模型调用但未产生可评分结果，按错误答案计入准确率并继续；
-API、执行环境或评分器错误不写入当前样本，运行立即停止，修复后可续跑。
+Each cell contains:
 
-## AFlow：`run_aflow.sh`
+| File | Contents |
+| --- | --- |
+| `experiment.json` | effective configuration, environment, revisions, and fingerprint |
+| `records.jsonl` | problem, reference answer, metadata, model output, score, usage, and timing |
+| `api_calls.jsonl` | request latency, token counts, retries, seed, and provider request ID |
+| `errors.jsonl` | durable diagnostics, created only after an error |
+| `summary.json` | aggregate accuracy, counts, usage, and timing |
 
-脚本一次只处理一个数据集，支持 `gsm1k`、`math-perturb`、`harp` 和
-`u-math-text-only`。不接受 MathConstruct，也不包含其他方法的矩阵参数。
+A `method_failed` record means the method completed its model interaction but
+did not produce a scoreable answer. It counts as incorrect and evaluation
+continues. API failures, unavailable execution dependencies, and scorer failures
+stop the run without marking that sample complete. After correcting the cause,
+repeat the same command to continue from the last completed problem.
 
-### 搜索模式
+## AFlow search and test
 
-搜索模型迭代提出 declarative workflow，执行模型只在对应的固化 validation 上评估；
-每轮保存样本级结果，最终按 validation accuracy 选择 workflow，同分时优先模型调用
-更少、节点更少的图。
+`run_aflow.sh` handles one dataset at a time. It supports `gsm1k`,
+`math-perturb`, `harp`, and `u-math-text-only`; it does not support HARP small or
+MathConstruct.
+
+### Search mode
+
+Search mode evaluates a declarative workflow on the dataset's fixed validation
+split. Each round proposes one candidate. The selected workflow maximizes
+validation accuracy, with fewer model calls and fewer nodes used as tie-breakers.
 
 ```bash
 ./scripts/run_aflow.sh \
@@ -250,9 +269,12 @@ API、执行环境或评分器错误不写入当前样本，运行立即停止�
   --concurrency 4
 ```
 
-调试时可用 `--validation-size 10`。默认 optimizer 使用 `--model`；
-`--optimizer-temperature`、`--optimizer-max-output-tokens` 和
-`--optimizer-seed` 只控制优化器调用。搜索产物位于：
+Use `--validation-size 10` for a pipeline check. The optimizer defaults to the
+execution model. Its generation settings are controlled separately by
+`--optimizer-temperature`, `--optimizer-max-output-tokens`, and
+`--optimizer-seed`.
+
+Search artifacts are stored under:
 
 ```text
 results/aflow/<execution-model>/aflow/
@@ -264,10 +286,11 @@ results/aflow/<execution-model>/aflow/
     └── workflow.json
 ```
 
-### 测试模式
+### Test mode
 
-`--workflow` 必须指向搜索生成的 `workflow.json` 或其目录。脚本检查 workflow 已冻结、
-没有使用 test 优化，并且绑定的数据集与 `--dataset` 完全一致。
+`--workflow` must point to a generated `workflow.json` or its containing search
+directory. The runner verifies that the workflow is frozen, was not optimized on
+test data, and belongs to the selected dataset.
 
 ```bash
 ./scripts/run_aflow.sh \
@@ -282,29 +305,22 @@ results/aflow/<execution-model>/aflow/
   --concurrency 4
 ```
 
-再次执行同一设置会按样本续跑。测试结果位于
-`results/aflow/<execution-model>/aflow/<dataset>__rNNN__.../`，与对应模型的搜索目录同层。`--batch-size`、
-`--repeats` 和 `--seed-mode` 只用于 test；`--search-rounds` 和
-`--validation-size` 只用于 search。
+Test runs resume at sample level. Their directories sit beside the corresponding
+search directories under
+`results/aflow/<execution-model>/aflow/<dataset>__rNNN__.../`.
+`--batch-size`, `--repeats`, and `--seed-mode` apply only in test mode;
+`--search-rounds` and `--validation-size` apply only in search mode.
 
-`UTC-time` 格式为 `YYYYMMDDTHHMMSSZ`，记录该指纹首次创建时间；续跑复用原目录。
+Run `./scripts/run_aflow.sh --help` for the full option list.
 
-| 文件 | 内容 |
-| --- | --- |
-| `experiment.json` | 完整配置、环境、revision 和指纹 |
-| `records.jsonl` | 题目、参考答案、metadata、输出、评分和耗时 |
-| `api_calls.jsonl` | API latency、token、retry、seed 和 request ID |
-| `errors.jsonl` | 样本错误和 traceback；有错误时生成 |
-| `summary.json` | 累计指标及本次 batch/concurrency |
+## Evaluating U-MATH judges with µ-MATH
 
-## µ-MATH judge：`run_mu_math.sh`
+The official µ-MATH test data contains 271 problems and one candidate answer
+from each of four source models, for 1,084 labeled rows. This command evaluates
+the judge only; it does not run a reasoning method or modify the locked U-MATH
+judge.
 
-官方 test 包含 271 道题 × 4 个候选答案来源模型，共 1,084 行。该脚本只评估候选
-judge，不运行论文方法，也不读取正式 U-MATH judge lock。
-
-### 示例
-
-检查计划：
+Check the configuration without making API calls:
 
 ```bash
 ./scripts/run_mu_math.sh \
@@ -314,62 +330,50 @@ judge，不运行论文方法，也不读取正式 U-MATH judge lock。
   --dry-run
 ```
 
-先运行一条：
+Complete the evaluation:
 
 ```bash
-./scripts/run_mu_math.sh --judge qwen37_flash --batch-size 1
-```
-
-分批运行或完成剩余数据：
-
-```bash
-./scripts/run_mu_math.sh \
-  --judge qwen37_flash \
-  --batch-size 100 \
-  --concurrency 8
-
 ./scripts/run_mu_math.sh \
   --judge qwen37_flash \
   --batch-size all \
   --concurrency 8
 ```
 
-### 参数
+### Options
 
-| 参数 | 默认值 | 含义 |
+| Option | Default | Meaning |
 | --- | --- | --- |
-| `--judge JUDGE` | `qwen35_flash` | 候选 profile 名称、已配置 model ID 或 TOML 路径 |
-| `--batch-size N\|all` | `1` | 本次新增行数 |
-| `--concurrency N` | `1` | judge 请求并发数 |
-| `--data-root PATH` | `../math-benchmark-data` | 数据仓库 |
-| `--output-root PATH` | `results/mu_math` | 结果目录 |
-| `--env-file PATH` | `.env` | 环境变量文件 |
-| `--dry-run` | 关闭 | 只检查和展示计划 |
-| `--yes` | 关闭 | 跳过确认 |
-| `--skip-preflight` | 关闭 | 跳过 judge API 连通性检查 |
-| `--debug` | 关闭 | 在终端打印完整 traceback |
+| `--judge JUDGE` | `qwen35_flash` | candidate profile name, model ID, or TOML path |
+| `--batch-size N\|all` | `1` | new labeled rows to process |
+| `--concurrency N` | `1` | concurrent judge requests |
+| `--data-root PATH` | `../math-benchmark-data` | prepared data repository |
+| `--output-root PATH` | `results/mu_math` | result root |
+| `--env-file PATH` | `.env` | environment-variable file |
+| `--dry-run` | off | validate and display the plan without API calls |
+| `--yes` | off | skip the interactive confirmation |
+| `--skip-preflight` | off | bypass the initial API connectivity check |
+| `--debug` | off | print full tracebacks in addition to recording diagnostics |
 
-该脚本不提供 model ID、temperature、seed 或 max token 的命令行覆盖。候选 judge
-配置完全由 profile 固定。
+Model ID, temperature, seed, and output length cannot be overridden on this
+command line. They belong to the candidate profile, which keeps judge
+comparisons reproducible.
 
-### Judge profile
+### Candidate profiles
 
-内置候选：
-
-| `--judge` | model | API key 环境变量 |
+| Profile | Model | Credential |
 | --- | --- | --- |
-| `qwen35_flash`（默认） | `qwen3.5-flash-2026-02-23` | `DASHSCOPE_API_KEY_BEIJING` |
+| `qwen35_flash` | `qwen3.5-flash-2026-02-23` | `DASHSCOPE_API_KEY_BEIJING` |
 | `qwen37_flash` | `qwen3.7-flash-2026-07-15` | `DASHSCOPE_API_KEY_BEIJING` |
-| `gemini36_flash` | `gemini-3.6-flash`，reasoning effort=`medium` | `GEMINI_API_KEY` |
-| `deepseek_v4_pro` | `deepseek-v4-pro`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
-| `deepseek_v4_flash` | `deepseek-v4-flash`，thinking=`enabled`、reasoning effort=`high` | `DEEPSEEK_API_KEY` |
+| `gemini36_flash` | `gemini-3.6-flash`, reasoning effort `medium` | `GEMINI_API_KEY` |
+| `deepseek_v4_pro` | `deepseek-v4-pro`, thinking enabled, reasoning effort `high` | `DEEPSEEK_API_KEY` |
+| `deepseek_v4_flash` | `deepseek-v4-flash`, thinking enabled, reasoning effort `high` | `DEEPSEEK_API_KEY` |
 
-Qwen 候选固定 `temperature=0`、`top_p=1`、`seed=20260729`；Gemini 3.6
-Flash 免费层使用 Google AI Studio API key，Gemini 与 DeepSeek thinking 模式均不
-发送 `temperature`、`top_p` 或 `seed`。所有候选均固定
-`max_output_tokens=4096`。
+The Qwen profiles fix `temperature=0`, `top_p=1`, and `seed=20260729`. Gemini
+and DeepSeek thinking profiles omit temperature, top-p, and seed. Every bundled
+candidate uses `max_output_tokens=4096`.
 
-修改 profile 会创建新实验目录。测试其他 judge 时建议复制为新文件：
+To test another judge without changing an existing profile, copy one to a new
+file and select that path:
 
 ```bash
 cp configs/judges/candidates/qwen35_flash.toml \
@@ -377,20 +381,14 @@ cp configs/judges/candidates/qwen35_flash.toml \
 
 ./scripts/run_mu_math.sh \
   --judge configs/judges/candidates/my_candidate.toml \
-  --batch-size 100
+  --batch-size all
 ```
 
-### 指标与产物
-
-judge 输出 `Yes`、`No` 或 `Inconclusive`。格式不合规时按 `Inconclusive` 处理；
-`Inconclusive` 始终算错，不映射成 Yes 或 No。
-
-`summary.json` 报告总体和四个候选答案来源模型切片的：
-
-- macro-F1、positive/negative F1、accuracy；
-- TPR、TNR、PPV、NPV；
-- TP、TN、FP、FN 和 Inconclusive；
-- token、latency、retry 和错误。
+The judge returns `Yes`, `No`, or `Inconclusive`. Invalid output is treated as
+`Inconclusive`, and `Inconclusive` counts as incorrect. `summary.json` reports
+macro-F1, positive and negative F1, accuracy, TPR, TNR, PPV, NPV, the confusion
+matrix, inconclusive count, token use, latency, retries, and errors. Metrics are
+reported overall and by answer-source model.
 
 ```text
 results/mu_math/
@@ -404,17 +402,20 @@ results/mu_math/
             └── summary.json
 ```
 
-## 错误与退出码
+## Failures and exit codes
 
-样本错误写入 `errors.jsonl`；`--debug` 同时在终端显示 traceback。未捕获异常写入
-输出根目录的 `_fatal_errors.jsonl`。
+Sample diagnostics are appended to `errors.jsonl`. With `--debug`, the same
+traceback is also printed in the terminal. An uncaught top-level exception is
+written to `_fatal_errors.jsonl` under the selected output root.
 
-| 退出码 | 含义 |
+| Exit code | Meaning |
 | ---: | --- |
-| `0` | 成功、dry-run 或实验已完成 |
-| `1` | 存在样本级 error |
-| `2` | 参数、配置、仓库、数据、环境或 preflight 失败 |
-| `130` | 用户中断；已落盘样本可续跑 |
+| `0` | completed, already complete, or dry-run finished |
+| `1` | a sample-level error stopped the run |
+| `2` | invalid arguments, configuration, repository, data, environment, or preflight |
+| `130` | interrupted by the user; completed sample records remain resumable |
+
+For the authoritative option list installed in the current checkout, use:
 
 ```bash
 ./scripts/run_experiments.sh --help
